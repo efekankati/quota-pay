@@ -49,9 +49,8 @@ SPOT_HOURLY_RATE_USD=0.005
 EOF
 chmod 600 /opt/quota-pay/.env
 
-# Try pulling prebuilt GHCR image first; fallback to building from cloned repo
-if docker pull ghcr.io/efekankati/quota-pay:latest; then
-  docker compose up -d
-else
-  docker compose up -d --build
+# Try pulling prebuilt GHCR image first; fallback to standard docker build from cloned repo
+if ! docker pull ghcr.io/efekankati/quota-pay:latest; then
+  DOCKER_BUILDKIT=0 docker build -t ghcr.io/efekankati/quota-pay:latest -f server/Dockerfile .
 fi
+docker compose up -d --no-build
