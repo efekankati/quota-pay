@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import {
   View,
+  Text,
   StyleSheet,
   Animated,
   Dimensions,
@@ -29,20 +30,18 @@ const EXPANSION_EASE = Easing.bezier(0.4, 0, 0.2, 1);
  *
  * Timeline Choreography:
  * - Phase 1: Soft Atmospheric Entry (0ms – 1000ms)
- *   * Dark background (#0A0B0E) occludes entire app.
- *   * "Q" emblem fades 0 -> 1 and eases in scale 0.80 -> 1.0.
- *   * Emerald/teal radial glow (#00E676 / #00BFA5) breathes in behind emblem.
- *   * Typography ("Quota Pay") enters staggered at 350ms – 1000ms (+8px translateY -> 0px, opacity 0 -> 1).
+ *   * Root canvas (#0A0B0E) occludes entire app (including bottom nav & FAB).
+ *   * "Q" emblem eases in with scale (0.80 -> 1.0) and opacity (0 -> 1) transparently on #0A0B0E.
+ *   * Emerald radial glow (#00E676 / #10B981) breathes in behind emblem.
+ *   * Typography ("Quota Pay") fades in staggered at 350ms – 1000ms (+8px translateY -> 0px, opacity 0 -> 1).
  *
- * - Phase 2: Elegant Brand Hold (1000ms – 1600ms)
- *   * 600ms steady hold showcasing the complete brand lockup.
- *   * Ambient glow gently oscillates between 0.18 and 0.24 opacity.
+ * - Phase 2: Steady Brand Hold (1000ms – 1600ms)
+ *   * 600ms steady hold of the complete brand mark.
  *
- * - Phase 3: Cinematic Zoom & Dissolve Reveal (1600ms – 2400ms)
- *   * "Q" emblem scales outward (1.0 -> 3.2) while fading to 0 (1800ms – 2300ms).
- *   * Typography fades out faster by 1900ms (visual focus on expanding emblem).
- *   * Background overlay fades 1 -> 0 (1900ms – 2400ms), revealing Home dashboard as it expands 0.96 -> 1.0.
- *   * Cleanly unmounts at 2400ms.
+ * - Phase 3: Cinematic Scale & Dissolve Reveal (1600ms – 2400ms)
+ *   * "Q" emblem smoothly scales up (1.0 -> 3.2) and dissolves (opacity 1 -> 0).
+ *   * Splash background dissolves concurrently, revealing the Home dashboard beneath with subtle depth scaling.
+ *   * Unmounts cleanly at 2400ms.
  */
 export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
   onFinish,
@@ -50,18 +49,18 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
 }) => {
   const { lightImpact } = useHaptics();
 
-  // Root splash overlay opacity (100% opaque until reveal at 1900ms)
+  // Root splash overlay opacity (100% opaque until Phase 3 dissolve)
   const overlayOpacity = useRef(new Animated.Value(1)).current;
 
-  // Q emblem animation values (GPU-accelerated transform: scale & opacity)
+  // Q emblem animation values (scale 0.8 -> 1.0 -> 3.2 & opacity 0 -> 1 -> 0)
   const emblemScale = useRef(new Animated.Value(0.8)).current;
   const emblemOpacity = useRef(new Animated.Value(0)).current;
 
-  // Typography animation values (staggered entry & translateY)
+  // Typography ("Quota Pay") staggered entry & dissolve
   const textOpacity = useRef(new Animated.Value(0)).current;
   const textTranslateY = useRef(new Animated.Value(8)).current;
 
-  // Ambient radial glow values
+  // Emerald radial glow values
   const glowScale = useRef(new Animated.Value(0.75)).current;
   const glowOpacity = useRef(new Animated.Value(0)).current;
 
@@ -76,13 +75,11 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
       return true;
     });
 
-    // --- TIMELINE ORCHESTRATION ---
-
-    // 1. Emblem & Glow Entry (0ms – 1000ms)
+    // --- PHASE 1 (0ms – 1000ms): Emblem & Radial Glow Ease-In + Staggered Typography ---
     const emblemAndGlowEntry = Animated.parallel([
       Animated.timing(emblemOpacity, {
         toValue: 1,
-        duration: 900,
+        duration: 950,
         easing: FINTECH_EASE,
         useNativeDriver: useNative,
       }),
@@ -93,7 +90,7 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
         useNativeDriver: useNative,
       }),
       Animated.timing(glowOpacity, {
-        toValue: 0.20,
+        toValue: 0.24,
         duration: 1000,
         easing: FINTECH_EASE,
         useNativeDriver: useNative,
@@ -106,7 +103,6 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
       }),
     ]);
 
-    // 2. Typography Staggered Entry (350ms – 1000ms, 650ms duration)
     const textEntry = Animated.sequence([
       Animated.delay(350),
       Animated.parallel([
@@ -125,20 +121,19 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
       ]),
     ]);
 
-    // Phase 1 combo (0ms – 1000ms)
     const phase1 = Animated.parallel([emblemAndGlowEntry, textEntry]);
 
-    // Phase 2: Elegant Brand Hold (1000ms – 1600ms, 600ms duration)
+    // --- PHASE 2 (1000ms – 1600ms): Steady Brand Hold (600ms) ---
     const phase2 = Animated.parallel([
       Animated.sequence([
         Animated.timing(glowOpacity, {
-          toValue: 0.24,
+          toValue: 0.28,
           duration: 300,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: useNative,
         }),
         Animated.timing(glowOpacity, {
-          toValue: 0.20,
+          toValue: 0.22,
           duration: 300,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: useNative,
@@ -160,41 +155,34 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
       ]),
     ]);
 
-    // Phase 3: Cinematic Zoom & Dissolve Reveal (1600ms – 2400ms, 800ms duration)
+    // --- PHASE 3 (1600ms – 2400ms): Smooth Scale-Up (1.0 -> 3.2) & Dissolve ---
     const phase3 = Animated.parallel([
-      // Emblem expands smoothly 1.0 -> 3.2
       Animated.timing(emblemScale, {
         toValue: 3.2,
         duration: 800,
         easing: EXPANSION_EASE,
         useNativeDriver: useNative,
       }),
-      // Emblem fades out between 1800ms and 2300ms (delay 200ms into Phase 3)
-      Animated.sequence([
-        Animated.delay(200),
-        Animated.timing(emblemOpacity, {
-          toValue: 0,
-          duration: 500,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: useNative,
-        }),
-      ]),
-      // Typography fades out faster by 1900ms (300ms duration from 1600ms)
+      Animated.timing(emblemOpacity, {
+        toValue: 0,
+        duration: 750,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: useNative,
+      }),
       Animated.parallel([
         Animated.timing(textOpacity, {
           toValue: 0,
-          duration: 300,
+          duration: 350,
           easing: Easing.out(Easing.quad),
           useNativeDriver: useNative,
         }),
         Animated.timing(textTranslateY, {
-          toValue: -4,
-          duration: 300,
+          toValue: -6,
+          duration: 350,
           easing: Easing.out(Easing.quad),
           useNativeDriver: useNative,
         }),
       ]),
-      // Ambient glow expands and dissipates
       Animated.timing(glowScale, {
         toValue: 3.0,
         duration: 800,
@@ -203,39 +191,38 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
       }),
       Animated.timing(glowOpacity, {
         toValue: 0,
-        duration: 650,
+        duration: 700,
         easing: Easing.out(Easing.quad),
         useNativeDriver: useNative,
       }),
-      // Root overlay fades out seamlessly from 1900ms to 2400ms (300ms delay into Phase 3, 500ms duration)
       Animated.sequence([
-        Animated.delay(300),
+        Animated.delay(150),
         Animated.timing(overlayOpacity, {
           toValue: 0,
-          duration: 500,
+          duration: 650,
           easing: FINTECH_EASE,
           useNativeDriver: useNative,
         }),
       ]),
     ]);
 
-    // Full 2.4-second sequential master timeline
+    // Master 2400ms sequence
     const masterTimeline = Animated.sequence([phase1, phase2, phase3]);
     activeAnimationRef.current = masterTimeline;
 
-    // Trigger subtle tactile haptic at steady brand settle (~950ms)
+    // Subtle tactile haptic when brand lockup settles at 950ms
     const settleTimer = setTimeout(() => {
       if (!isCompletedRef.current) {
         lightImpact();
       }
     }, 950);
 
-    // Trigger reveal start callback at 1900ms for concurrent Home dashboard scale-up
+    // Trigger Home dashboard subtle depth scale reveal at 1650ms
     const revealStartTimer = setTimeout(() => {
       if (!isCompletedRef.current) {
         onRevealStart?.();
       }
-    }, 1900);
+    }, 1650);
 
     masterTimeline.start(({ finished }) => {
       if (finished && !isCompletedRef.current) {
@@ -254,7 +241,7 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
     };
   }, [lightImpact, onFinish, onRevealStart]);
 
-  // Fast-skip on tap
+  // Allow tap-to-skip only after steady brand hold
   const handleSkip = () => {
     if (isCompletedRef.current) return;
     isCompletedRef.current = true;
@@ -264,7 +251,7 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
     }
     Animated.timing(overlayOpacity, {
       toValue: 0,
-      duration: 150,
+      duration: 180,
       easing: Easing.out(Easing.quad),
       useNativeDriver: Platform.OS !== 'web',
     }).start(() => {
@@ -272,14 +259,9 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
     });
   };
 
-  // Dimensions matching the authentic 400x310 emblem and 440x96 typography
-  const emblemWidth = Math.min(SCREEN_WIDTH * 0.42, 168);
+  const emblemWidth = Math.min(SCREEN_WIDTH * 0.44, 176);
   const emblemHeight = emblemWidth * (310 / 400);
-
-  const textWidth = Math.min(SCREEN_WIDTH * 0.58, 232);
-  const textHeight = textWidth * (96 / 440);
-
-  const glowSize = Math.max(emblemWidth * 1.85, 300);
+  const glowSize = Math.max(emblemWidth * 2.0, 320);
 
   return (
     <Animated.View
@@ -293,7 +275,7 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
       accessible={false}
     >
       <Pressable style={styles.pressableContainer} onPress={handleSkip}>
-        {/* Soft Radial Emerald/Teal Ambient Glow (#00E676 / #00BFA5, ~60px blur, ~0.20 peak opacity) */}
+        {/* Emerald Radial Glow (#00E676 / #10B981) sitting directly on #0A0B0E */}
         <Animated.View
           style={[
             styles.glowContainer,
@@ -309,25 +291,24 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
         >
           <Svg width={glowSize} height={glowSize} viewBox={`0 0 ${glowSize} ${glowSize}`}>
             <Defs>
-              <RadialGradient id="cinematicGlow" cx="50%" cy="50%" rx="50%" ry="50%">
-                <Stop offset="0%" stopColor="#00E676" stopOpacity="0.40" />
-                <Stop offset="38%" stopColor="#00BFA5" stopOpacity="0.22" />
-                <Stop offset="72%" stopColor="#00E676" stopOpacity="0.06" />
-                <Stop offset="100%" stopColor="#00BFA5" stopOpacity="0" />
+              <RadialGradient id="emeraldLaunchGlow" cx="50%" cy="50%" rx="50%" ry="50%">
+                <Stop offset="0%" stopColor="#00E676" stopOpacity="0.45" />
+                <Stop offset="42%" stopColor="#10B981" stopOpacity="0.24" />
+                <Stop offset="75%" stopColor="#00E676" stopOpacity="0.06" />
+                <Stop offset="100%" stopColor="#10B981" stopOpacity="0" />
               </RadialGradient>
             </Defs>
             <Circle
               cx={glowSize / 2}
               cy={glowSize / 2}
               r={glowSize / 2}
-              fill="url(#cinematicGlow)"
+              fill="url(#emeraldLaunchGlow)"
             />
           </Svg>
         </Animated.View>
 
-        {/* Central Brand Lockup: Emblem + Typography */}
+        {/* Transparent Brand Lockup: Zero Rectangular Card or Container */}
         <View style={styles.brandLockup}>
-          {/* "Q" Emblem (Transparent PNG with GPU-accelerated scale & opacity) */}
           <Animated.View
             style={[
               styles.emblemWrapper,
@@ -339,14 +320,18 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
           >
             <Image
               source={require('../../../assets/quota-emblem.png')}
-              style={{ width: emblemWidth, height: emblemHeight }}
+              style={{
+                width: emblemWidth,
+                height: emblemHeight,
+                backgroundColor: 'transparent',
+              }}
               resizeMode="contain"
               fadeDuration={0}
               accessibilityLabel="Quota Emblem"
             />
           </Animated.View>
 
-          {/* Typography ("Quota Pay") with staggered entry & subtle upward translation */}
+          {/* Staggered "Quota Pay" Typography */}
           <Animated.View
             style={[
               styles.textWrapper,
@@ -356,13 +341,10 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
               },
             ]}
           >
-            <Image
-              source={require('../../../assets/quota-text.png')}
-              style={{ width: textWidth, height: textHeight }}
-              resizeMode="contain"
-              fadeDuration={0}
-              accessibilityLabel="Quota Pay"
-            />
+            <View style={styles.wordmarkRow}>
+              <Text style={styles.wordmarkQuota}>Quota</Text>
+              <Text style={styles.wordmarkPay}>Pay</Text>
+            </View>
           </Animated.View>
         </View>
       </Pressable>
@@ -372,14 +354,27 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
 
 const styles = StyleSheet.create({
   overlay: {
-    ...StyleSheet.absoluteFill,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    ...(Platform.OS === 'web'
+      ? ({
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          width: '100vw',
+          height: '100vh',
+        } as any)
+      : {}),
     backgroundColor: '#0A0B0E',
     zIndex: 99999,
     elevation: 99999,
     justifyContent: 'center',
     alignItems: 'center',
-    width: '100%',
-    height: '100%',
   },
   pressableContainer: {
     flex: 1,
@@ -387,11 +382,13 @@ const styles = StyleSheet.create({
     height: '100%',
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: 'transparent',
   },
   glowContainer: {
     position: 'absolute',
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: 'transparent',
     zIndex: 1,
   },
   brandLockup: {
@@ -410,5 +407,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'transparent',
+  },
+  wordmarkRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+    gap: 10,
+  },
+  wordmarkQuota: {
+    fontSize: 38,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.8,
+  },
+  wordmarkPay: {
+    fontSize: 38,
+    fontWeight: '800',
+    color: '#00E676',
+    letterSpacing: -0.8,
   },
 });
