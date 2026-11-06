@@ -21,12 +21,14 @@ import { GooglePayButton } from '../components/payment/GooglePayButton';
 import { SatispayButton } from '../components/payment/SatispayButton';
 import { usePaymentSheet } from '../hooks/usePaymentSheet';
 import { useHaptics } from '../hooks/useHaptics';
-import { showAppAlert } from '../store/useAlertStore';
+import { showAppAlert, useAlertStore } from '../store/useAlertStore';
+import { BillSyncService } from '../services/sync/BillSyncService';
 import { RADIUS, SPACING, TYPOGRAPHY } from '../config/theme';
 
 interface SplitPaymentScreenProps {
   billId: string;
   participantId: string;
+  isGuest?: boolean;
   onBack: () => void;
   onPaymentSuccess: (billId: string) => void;
 }
@@ -34,13 +36,15 @@ interface SplitPaymentScreenProps {
 export const SplitPaymentScreen: React.FC<SplitPaymentScreenProps> = ({
   billId,
   participantId,
+  isGuest = false,
   onBack,
   onPaymentSuccess,
 }) => {
   const { colors } = useThemeStore();
   const { t } = useLanguageStore();
-  const { bills, setTipPercentage, setTipCustomAmount } = useBillStore();
+  const { bills, setTipPercentage, setTipCustomAmount, upsertBill } = useBillStore();
   const { user } = useAuthStore();
+  const { isVisible: isAlertVisible } = useAlertStore();
   const { successNotification } = useHaptics();
   const [ibanCopied, setIbanCopied] = useState(false);
   const {
@@ -53,8 +57,45 @@ export const SplitPaymentScreen: React.FC<SplitPaymentScreenProps> = ({
     payWithSepaIban,
   } = usePaymentSheet(billId, participantId);
 
+  const isGuestBrowser =
+    Boolean(isGuest) ||
+    (Platform.OS === 'web' &&
+      typeof window !== 'undefined' &&
+      Boolean(
+        window.location?.search?.includes('bill=') ||
+          window.location?.search?.includes('claim=') ||
+          window.location?.search?.includes('split=') ||
+          window.location?.pathname?.includes('/pay/') ||
+          window.location?.pathname?.includes('/bill/')
+      ));
+
   const bill = bills.find((b) => b.id === billId) || bills[0];
   const participant = bill?.participants.find((p) => p.id === participantId);
+
+  // Pull live bill on mount & auto-route already-paid participants to Table Summary
+  React.useEffect(() => {
+    if (!billId) return;
+    let isMounted = true;
+    BillSyncService.fetchBillFromCloud(billId)
+      .then((cloudBill) => {
+        if (cloudBill && isMounted) {
+          upsertBill(cloudBill);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, [billId, upsertBill]);
+
+  React.useEffect(() => {
+    if (participant?.status === 'paid' && !isProcessing && !isAlertVisible) {
+      const timer = setTimeout(() => {
+        onPaymentSuccess(billId);
+      }, 250);
+      return () => clearTimeout(timer);
+    }
+  }, [participant?.status, isProcessing, isAlertVisible, billId, onPaymentSuccess]);
   const organizerParticipant = bill?.participants.find(
     (p) => Boolean(p.isOrganizer) || p.id === bill?.organizerId || p.id === 'user_me'
   );
@@ -140,7 +181,7 @@ export const SplitPaymentScreen: React.FC<SplitPaymentScreenProps> = ({
       <Header
         title="Quota"
         subtitle={bill?.restaurantName || 'Restaurant'}
-        showBack
+        showBack={!isGuestBrowser}
         onBack={onBack}
       />
 

@@ -38,6 +38,7 @@ interface GuestClaimScreenProps {
   billId: string;
   initialParticipantId?: string;
   onProceedToPayment: (billId: string, participantId: string) => void;
+  onOpenSummary?: (billId: string, participantId?: string) => void;
   onBackToApp?: () => void;
 }
 
@@ -47,6 +48,7 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
   billId,
   initialParticipantId,
   onProceedToPayment,
+  onOpenSummary,
   onBackToApp,
 }) => {
   const { colors } = useThemeStore();
@@ -164,17 +166,40 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
     );
   }, [bill]);
 
-  // Current active guest participant ID
+  // Current active guest participant ID (persisted per browser tab in sessionStorage)
   const [selectedGuestId, setSelectedGuestId] = useState<string | null>(() => {
-    if (initialParticipantId && initialParticipantId !== organizer?.id) {
+    const saved = DeepLinkService.getGuestTabSession(billId);
+    const candidateId =
+      saved.participantId ||
+      (initialParticipantId &&
+      initialParticipantId !== 'user_me' &&
+      initialParticipantId !== organizer?.id
+        ? initialParticipantId
+        : null);
+    if (candidateId) {
       const match = bill?.participants.find(
-        (p) => p.id === initialParticipantId || p.splitId === initialParticipantId
+        (p) => p.id === candidateId || p.splitId === candidateId
       );
       if (match) return match.id;
-      return initialParticipantId;
+      return candidateId;
     }
     return null;
   });
+
+  // Automatically route paid guests straight to the Table Summary screen (Screenshot 1)
+  React.useEffect(() => {
+    if (!bill || !selectedGuestId || !onOpenSummary) return;
+    const diner = bill.participants.find(
+      (p) => p.id === selectedGuestId || p.splitId === selectedGuestId
+    );
+    if (diner && diner.status === 'paid') {
+      DeepLinkService.saveGuestTabSession(bill.id, {
+        participantId: diner.id,
+        screen: 'summary',
+      });
+      onOpenSummary(bill.id, diner.id);
+    }
+  }, [bill, selectedGuestId, onOpenSummary]);
 
   const [typedName, setTypedName] = useState('');
   const [activeFilter, setActiveFilter] = useState<GuestFilter>('all');
@@ -267,6 +292,18 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
     );
     if (existing) {
       setSelectedGuestId(existing.id);
+      if (existing.status === 'paid' && onOpenSummary) {
+        DeepLinkService.saveGuestTabSession(bill.id, {
+          participantId: existing.id,
+          screen: 'summary',
+        });
+        onOpenSummary(bill.id, existing.id);
+      } else {
+        DeepLinkService.saveGuestTabSession(bill.id, {
+          participantId: existing.id,
+          screen: 'guest_claim',
+        });
+      }
       successNotification();
       return;
     }
@@ -276,6 +313,10 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
       isOrganizer: false,
     });
     setSelectedGuestId(newId);
+    DeepLinkService.saveGuestTabSession(bill.id, {
+      participantId: newId,
+      screen: 'guest_claim',
+    });
     successNotification();
   };
 
@@ -283,17 +324,29 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
   const handleSelectExistingParticipant = (participantId: string) => {
     lightImpact();
     setSelectedGuestId(participantId);
+    const chosen = bill.participants.find((p) => p.id === participantId);
+    if (chosen?.status === 'paid' && onOpenSummary) {
+      DeepLinkService.saveGuestTabSession(bill.id, {
+        participantId,
+        screen: 'summary',
+      });
+      onOpenSummary(bill.id, participantId);
+    } else {
+      DeepLinkService.saveGuestTabSession(bill.id, {
+        participantId,
+        screen: 'guest_claim',
+      });
+    }
     successNotification();
   };
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Top Header - hide back button on initial page where user is requested to type their name */}
+      {/* Top Header - no back arrow on guest web page */}
       <Header
         title={bill.restaurantName}
         subtitle={t('guestClaimTitle')}
-        showBack={Boolean(selectedGuestId)}
-        onBack={() => setSelectedGuestId(null)}
+        showBack={false}
       />
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -494,6 +547,10 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
               <TouchableOpacity
                 onPress={() => {
                   lightImpact();
+                  DeepLinkService.saveGuestTabSession(bill.id, {
+                    participantId: null,
+                    screen: 'guest_claim',
+                  });
                   setSelectedGuestId(null);
                 }}
                 style={[

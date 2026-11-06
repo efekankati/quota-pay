@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { StripeService } from '../services/payment/StripeService';
 import { SatispayService } from '../services/payment/SatispayService';
 import { BillSyncService } from '../services/sync/BillSyncService';
+import { DeepLinkService } from '../services/deepLink/DeepLinkService';
 import { useBillStore } from '../store/useBillStore';
 import { useHaptics } from './useHaptics';
 
@@ -58,6 +59,10 @@ export function usePaymentSheet(billId: string, participantId: string) {
 
       if (sheetResult.success) {
         const participant = bill?.participants.find((p) => p.id === participantId);
+        DeepLinkService.saveGuestTabSession(billId, {
+          participantId,
+          screen: 'summary',
+        });
         markParticipantPaid(billId, participantId, 'apple_pay', share.totalDue);
         BillSyncService.markSplitPaidInCloud(
           billId,
@@ -67,7 +72,6 @@ export function usePaymentSheet(billId: string, participantId: string) {
           'apple_pay'
         ).catch(() => {});
         successNotification();
-        setIsProcessing(false);
         return true;
       } else {
         throw new Error(sheetResult.error?.message || 'Apple Pay payment cancelled.');
@@ -75,8 +79,9 @@ export function usePaymentSheet(billId: string, participantId: string) {
     } catch (error: any) {
       errorNotification();
       setErrorMessage(error.message || 'Error during Apple Pay transaction.');
-      setIsProcessing(false);
       return false;
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -114,6 +119,10 @@ export function usePaymentSheet(billId: string, participantId: string) {
 
       if (sheetResult.success) {
         const participant = bill?.participants.find((p) => p.id === participantId);
+        DeepLinkService.saveGuestTabSession(billId, {
+          participantId,
+          screen: 'summary',
+        });
         markParticipantPaid(billId, participantId, 'google_pay', share.totalDue);
         BillSyncService.markSplitPaidInCloud(
           billId,
@@ -123,7 +132,6 @@ export function usePaymentSheet(billId: string, participantId: string) {
           'google_pay'
         ).catch(() => {});
         successNotification();
-        setIsProcessing(false);
         return true;
       } else {
         throw new Error(sheetResult.error?.message || 'Google Pay payment cancelled.');
@@ -131,8 +139,9 @@ export function usePaymentSheet(billId: string, participantId: string) {
     } catch (error: any) {
       errorNotification();
       setErrorMessage(error.message || 'Error during Google Pay transaction.');
-      setIsProcessing(false);
       return false;
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -154,6 +163,10 @@ export function usePaymentSheet(billId: string, participantId: string) {
 
       // Mark as paid directly to organizer
       const participant = bill?.participants.find((p) => p.id === participantId);
+      DeepLinkService.saveGuestTabSession(billId, {
+        participantId,
+        screen: 'summary',
+      });
       markParticipantPaid(billId, participantId, 'satispay', share.totalDue);
       BillSyncService.markSplitPaidInCloud(
         billId,
@@ -163,13 +176,13 @@ export function usePaymentSheet(billId: string, participantId: string) {
         'satispay'
       ).catch(() => {});
       successNotification();
-      setIsProcessing(false);
       return true;
     } catch (error: any) {
       errorNotification();
       setErrorMessage(error.message || 'Unable to launch Satispay payment.');
-      setIsProcessing(false);
       return false;
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -182,24 +195,28 @@ export function usePaymentSheet(billId: string, participantId: string) {
     heavyImpact();
 
     try {
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, 150));
       const participant = bill?.participants.find((p) => p.id === participantId);
+      DeepLinkService.saveGuestTabSession(billId, {
+        participantId,
+        screen: 'summary',
+      });
       markParticipantPaid(billId, participantId, 'sepa_iban', share.totalDue);
-      await BillSyncService.markSplitPaidInCloud(
+      BillSyncService.markSplitPaidInCloud(
         billId,
         participantId,
         participant?.splitId || '',
         share.totalDue,
         'sepa_iban'
-      );
+      ).catch(() => {});
       successNotification();
-      setIsProcessing(false);
       return true;
     } catch (error: any) {
       errorNotification();
       setErrorMessage(error.message || 'Unable to execute SEPA instant transfer.');
-      setIsProcessing(false);
       return false;
+    } finally {
+      setIsProcessing(false);
     }
   };
 

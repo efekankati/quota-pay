@@ -127,7 +127,7 @@ export class StripeService {
     params: PaymentIntentInitRequest
   ): Promise<PaymentIntentInitResponse> {
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve) => setTimeout(resolve, 60));
       return {
         clientSecret: `pi_quota_${params.billId}_secret_${Math.random().toString(36).substring(7)}`,
         paymentIntentId: `pi_quota_${params.idempotencyKey.slice(0, 16)}`,
@@ -193,7 +193,7 @@ export class StripeService {
 
     // IF NOT IN REAL TEST MODE: Return simulated instant checkout
     if (!isTestMode) {
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, 90));
       return {
         success: true,
         paymentIntentId: `pi_simulated_${Date.now()}`,

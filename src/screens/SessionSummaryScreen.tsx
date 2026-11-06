@@ -66,49 +66,45 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
   const [nudgeTarget, setNudgeTarget] = useState<Participant | null>(null);
   const [isQrModalVisible, setIsQrModalVisible] = useState(false);
 
-  // Real-time synchronization & polling so guest payments immediately reflect on mobile app
+  // Real-time synchronization & polling so guest payments immediately reflect on mobile app & web
   React.useEffect(() => {
     let isMounted = true;
-    if (!bill?.id) return;
+    const targetId = billId || bill?.id;
+    if (!targetId) return;
 
-    // Ensure organizer's share is always marked as settled in store
-    const orgParticipant = bill.participants.find(
-      (p) => p.isOrganizer || p.id === 'user_me' || p.id === bill.organizerId
-    );
-    let didMarkOrganizerPaid = false;
-    if (orgParticipant) {
-      const orgDue = getBillShareBreakdown(bill.id, orgParticipant.id).totalDue;
-      if (
-        orgParticipant.status !== 'paid' ||
-        Math.abs((orgParticipant.paidAmount || 0) - orgDue) > 0.005
-      ) {
-        markParticipantPaid(
-          bill.id,
-          orgParticipant.id,
-          orgParticipant.paymentMethod || 'card',
-          orgDue
-        );
-        didMarkOrganizerPaid = true;
+    // Only the organizer device marks the organizer's share and seeds the cloud snapshot on mount
+    if (!isGuestBrowser && bill) {
+      const orgParticipant = bill.participants.find(
+        (p) => p.isOrganizer || p.id === 'user_me' || p.id === bill.organizerId
+      );
+      let didMarkOrganizerPaid = false;
+      if (orgParticipant) {
+        const orgDue = getBillShareBreakdown(bill.id, orgParticipant.id).totalDue;
+        if (
+          orgParticipant.status !== 'paid' ||
+          Math.abs((orgParticipant.paidAmount || 0) - orgDue) > 0.005
+        ) {
+          markParticipantPaid(
+            bill.id,
+            orgParticipant.id,
+            orgParticipant.paymentMethod || 'card',
+            orgDue
+          );
+          didMarkOrganizerPaid = true;
+        }
       }
-    }
 
-    // Immediately push the freshest bill state from store to cloud so it's guaranteed to be available for guests
-    if (!didMarkOrganizerPaid) {
-      const latestBill = useBillStore.getState().bills.find((b) => b.id === bill.id) || bill;
-      BillSyncService.saveBillToCloud(latestBill);
+      if (!didMarkOrganizerPaid) {
+        const latestBill = useBillStore.getState().bills.find((b) => b.id === bill.id) || bill;
+        BillSyncService.saveBillToCloud(latestBill);
+      }
     }
 
     const pullFromCloud = async () => {
       try {
-        const cloudBill = await BillSyncService.fetchBillFromCloud(bill.id);
+        const cloudBill = await BillSyncService.fetchBillFromCloud(targetId);
         if (cloudBill && isMounted) {
-          const currentCount = bill.participants.length;
-          const cloudCount = cloudBill.participants.length;
-          const currentPaid = bill.participants.filter((p) => p.status === 'paid').length;
-          const cloudPaid = cloudBill.participants.filter((p) => p.status === 'paid').length;
-          if (cloudCount > currentCount || cloudPaid > currentPaid || cloudBill.status !== bill.status) {
-            upsertBill(cloudBill);
-          }
+          upsertBill(cloudBill);
         }
       } catch {}
     };
@@ -117,21 +113,22 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
     const interval = setInterval(pullFromCloud, 2500);
 
     const unsubscribe = BillSyncService.subscribeToBillUpdates((updated) => {
-      if (updated?.id === bill?.id && isMounted) {
+      if (updated?.id === targetId && isMounted) {
         upsertBill(updated);
       }
     });
 
-    const unsubscribeSplits = BillSyncService.subscribeToBillSplits(bill.id, (splitRow) => {
-      if (splitRow && splitRow.bill_id === bill.id && isMounted) {
+    const unsubscribeSplits = BillSyncService.subscribeToBillSplits(targetId, (splitRow) => {
+      if (splitRow && splitRow.bill_id === targetId && isMounted) {
         if (splitRow.status === 'paid') {
-          const matched = bill.participants.find(
+          const latestBill = useBillStore.getState().bills.find((b) => b.id === targetId);
+          const matched = latestBill?.participants.find(
             (p) => p.id === splitRow.participant_id || p.splitId === splitRow.id
           );
           if (matched && matched.status !== 'paid') {
             const method = (splitRow.payment_method || 'other') as NonNullable<Participant['paymentMethod']>;
             const amount = Number(splitRow.owed_amount) || 0;
-            markParticipantPaid(bill.id, matched.id, method, amount);
+            markParticipantPaid(targetId, matched.id, method, amount);
             successNotification();
           }
         }
@@ -144,7 +141,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
       unsubscribe();
       unsubscribeSplits();
     };
-  }, [bill?.id, upsertBill, markParticipantPaid]);
+  }, [billId, bill?.id, isGuestBrowser, upsertBill, markParticipantPaid]);
 
   if (!bill) {
     return (

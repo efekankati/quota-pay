@@ -931,7 +931,7 @@ export const useBillStore = create<BillStoreState>()(
     });
     const updated = get().bills.find((b) => b.id === billId);
     if (updated) {
-      BillSyncService.broadcastBillUpdate(updated);
+      BillSyncService.broadcastBillUpdate(updated, participantId);
     }
   },
 
@@ -1032,7 +1032,7 @@ export const useBillStore = create<BillStoreState>()(
     });
     const updated = get().bills.find((b) => b.id === billId);
     if (updated) {
-      BillSyncService.broadcastBillUpdate(updated);
+      BillSyncService.broadcastBillUpdate(updated, participantId);
     }
   },
 
@@ -1381,6 +1381,14 @@ export const useBillStore = create<BillStoreState>()(
           };
         }
 
+        // Skip state mutation if mergedBill is identical to existing (prevents multi-tab twitching & localStorage churn)
+        if (
+          state.activeBillId === incomingBill.id &&
+          JSON.stringify(existing) === JSON.stringify(mergedBill)
+        ) {
+          return state;
+        }
+
         const updated = [...state.bills];
         updated[existingIndex] = mergedBill;
         return { bills: updated, activeBillId: incomingBill.id };
@@ -1551,24 +1559,9 @@ export const useBillStore = create<BillStoreState>()(
   )
 );
 
-// Cross-tab real-time synchronization on web
-if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-  window.addEventListener('storage', (event) => {
-    if (event.key === 'quota_bills_storage' && event.newValue) {
-      try {
-        const parsed = JSON.parse(event.newValue);
-        if (parsed.state?.bills) {
-          useBillStore.setState({
-            bills: parsed.state.bills,
-            ...(parsed.state.activeBillId ? { activeBillId: parsed.state.activeBillId } : {}),
-          });
-        }
-      } catch {}
-    }
-  });
-}
-
-// Cross-device real-time sync via Supabase (Mobile App <-> Web Browser)
+// Cross-device and cross-tab real-time sync via Supabase (Mobile App <-> Web Browser)
+// Note: We intentionally do NOT use window.addEventListener('storage') to overwrite bills across tabs
+// in the same browser because multiple guest tabs share localStorage and would ping-pong stale states.
 BillSyncService.subscribeToBillUpdates((cloudBill) => {
   if (cloudBill && cloudBill.id) {
     const existing = useBillStore.getState().bills.find((b) => b.id === cloudBill.id);

@@ -614,4 +614,54 @@ export class DeepLinkService {
       return { billId: null, claimId: null, isGuest: false, billData: null, lang: null };
     }
   }
+
+  /**
+   * Persists the current browser tab's guest participant ID and screen in `sessionStorage`
+   * (isolated per browser tab so multiple guest tabs on the same PC never collide, while
+   * surviving page refreshes F5 without throwing the guest back to the name prompt).
+   */
+  public static saveGuestTabSession(
+    billId: string,
+    update: { participantId?: string | null; screen?: string }
+  ): void {
+    if (Platform.OS !== 'web' || typeof window === 'undefined' || !billId) return;
+    try {
+      const key = `quota_tab_guest_${billId}`;
+      const existingRaw = window.sessionStorage?.getItem(key);
+      const existing = existingRaw ? JSON.parse(existingRaw) : {};
+      const next = {
+        ...existing,
+        ...(update.participantId !== undefined ? { participantId: update.participantId } : {}),
+        ...(update.screen !== undefined ? { screen: update.screen } : {}),
+        updatedAt: Date.now(),
+      };
+      window.sessionStorage?.setItem(key, JSON.stringify(next));
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  /**
+   * Reads the current browser tab's persisted guest participant ID and screen from `sessionStorage`.
+   */
+  public static getGuestTabSession(billId: string | null | undefined): {
+    participantId: string | null;
+    screen: string | null;
+  } {
+    if (Platform.OS !== 'web' || typeof window === 'undefined' || !billId) {
+      return { participantId: null, screen: null };
+    }
+    try {
+      const key = `quota_tab_guest_${billId}`;
+      const raw = window.sessionStorage?.getItem(key);
+      if (!raw) return { participantId: null, screen: null };
+      const parsed = JSON.parse(raw);
+      return {
+        participantId: parsed.participantId || null,
+        screen: parsed.screen || null,
+      };
+    } catch {
+      return { participantId: null, screen: null };
+    }
+  }
 }
