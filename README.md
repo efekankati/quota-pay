@@ -121,3 +121,29 @@ npx expo start
 # Press 'i' for iOS simulator (with Apple Pay sandbox)
 # Press 'a' for Android emulator (with Google Pay)
 ```
+
+---
+
+## 4. AWS `eu-south-1` (Milan) Ephemeral Spot Infrastructure & FinOps Circuit Breaker
+
+Quota Pay includes an ultra-low-cost, disposable cloud deployment stack designed to protect cloud credits and prevent runaway AI token spend:
+
+- **Secure Server-Side Gemini AI Proxy (`server/`)**:
+  - Serves the compiled Expo Web application and exposes `POST /api/ai/parse-receipt`, `POST /api/ai/translate`, `GET /api/ai/status`, and `GET /api/health`.
+  - Keeps `GEMINI_API_KEY` strictly on the server (never exposed in client bundles).
+- **Unified Supabase Token Ledger (`supabase/migrations/20261106000001_ai_token_ledger.sql`)**:
+  - Uses the existing Supabase PostgreSQL database (`ai_token_ledger` table + `record_gemini_tokens` stored procedure) with zero extra AWS database costs.
+  - **Tier 1 Soft Cap**: When cumulative token spend crosses `AI_MAX_BUDGET_USD` (default `$5.00`), the server immediately returns **HTTP 429 (`"AI Quota Paused by Administrator"`)**.
+- **Docker Compose + Caddy HTTPS + Watchtower (`docker-compose.yml`, `server/Dockerfile`)**:
+  - Multi-stage Alpine container behind Caddy for automatic Let's Encrypt SSL/TLS termination on ports `80/443` (eliminating the `$16+/mo` AWS Application Load Balancer cost) and Watchtower polling GHCR every 60s.
+- **Minimal-Cost AWS Milan Spot Terraform & FinOps Kill-Switch (`infra/terraform/`, `infra/scripts/`)**:
+  - Pinned strictly to `eu-south-1` (Milan) using a single `t3.small` EC2 Spot instance (`~$0.005/hr`) authenticated via AWS profile `efekankati`.
+  - **Tier 2 Hard Cap (`infra/scripts/cost_guard.py`)**: Background watchdog tracking Spot compute uptime + Gemini token spend; automatically triggers `terraform destroy -auto-approve` (`$0.00/hr`) if combined spend reaches `$5.00`.
+
+```powershell
+# Deploy ephemeral AWS eu-south-1 Spot instance + start FinOps CostGuard:
+.\infra\scripts\up.ps1
+
+# Tear down all billable AWS infrastructure down to $0.00/hr anytime:
+.\infra\scripts\destroy.ps1
+```
