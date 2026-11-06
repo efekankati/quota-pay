@@ -878,7 +878,54 @@ export const useBillStore = create<BillStoreState>()(
             assignedParticipantIds: newAssigned,
           };
         });
-        return { ...bill, items: updatedItems };
+
+        // Keep organizer paidAmount in sync with their claimed items so cloud & guest links always reflect it
+        const orgP = bill.participants.find(
+          (p) => p.isOrganizer || p.id === bill.organizerId || p.id === 'user_me'
+        );
+        let updatedParticipants = bill.participants;
+        if (orgP && !bill.isManual) {
+          let orgItemsShare = 0;
+          let orgClaimedCount = 0;
+          updatedItems.forEach((it) => {
+            if (it.isCoperto) return;
+            const cMap = it.claimedQuantities || {};
+            const totalC = Object.values(cMap).reduce((s, q) => s + (q || 0), 0);
+            const orgC = cMap[orgP.id] ?? cMap[bill.organizerId] ?? cMap['user_me'] ?? 0;
+            const aIds = it.assignedParticipantIds || [];
+            const isOrgAssigned =
+              aIds.includes(orgP.id) || aIds.includes(bill.organizerId) || aIds.includes('user_me');
+            if (totalC > 0 && totalC <= it.quantity && orgC > 0) {
+              orgClaimedCount += orgC;
+              orgItemsShare += orgC * it.unitPrice;
+            } else if (isOrgAssigned && aIds.length > 0) {
+              orgClaimedCount += 1;
+              orgItemsShare += Math.round((it.totalPrice / aIds.length) * 100) / 100;
+            }
+          });
+          const hasCoperto = updatedItems.some((it) => it.isCoperto);
+          const orgCoperto = hasCoperto && orgClaimedCount > 0 ? bill.copertoPerPerson || 0 : 0;
+          const orgBase = orgItemsShare + orgCoperto;
+          const orgTip =
+            bill.tipCustomAmount && bill.tipCustomAmount > 0
+              ? bill.tipCustomAmount
+              : bill.tipPercentage > 0
+              ? Math.round(orgBase * (bill.tipPercentage / 100) * 100) / 100
+              : 0;
+          const orgDue = Math.round((orgBase + orgTip) * 100) / 100;
+          updatedParticipants = bill.participants.map((p) =>
+            p.id === orgP.id
+              ? {
+                  ...p,
+                  status: orgDue > 0 ? ('paid' as const) : p.status,
+                  paidAmount: orgDue,
+                  paidAt: orgDue > 0 ? p.paidAt || new Date().toISOString() : p.paidAt,
+                }
+              : p
+          );
+        }
+
+        return { ...bill, items: updatedItems, participants: updatedParticipants };
       });
       return { bills };
     });
@@ -932,7 +979,54 @@ export const useBillStore = create<BillStoreState>()(
             assignedParticipantIds: newAssigned,
           };
         });
-        return { ...bill, items: updatedItems };
+
+        // Keep organizer paidAmount in sync with their claimed items so cloud & guest links always reflect it
+        const orgP = bill.participants.find(
+          (p) => p.isOrganizer || p.id === bill.organizerId || p.id === 'user_me'
+        );
+        let updatedParticipants = bill.participants;
+        if (orgP && !bill.isManual) {
+          let orgItemsShare = 0;
+          let orgClaimedCount = 0;
+          updatedItems.forEach((it) => {
+            if (it.isCoperto) return;
+            const cMap = it.claimedQuantities || {};
+            const totalC = Object.values(cMap).reduce((s, q) => s + (q || 0), 0);
+            const orgC = cMap[orgP.id] ?? cMap[bill.organizerId] ?? cMap['user_me'] ?? 0;
+            const aIds = it.assignedParticipantIds || [];
+            const isOrgAssigned =
+              aIds.includes(orgP.id) || aIds.includes(bill.organizerId) || aIds.includes('user_me');
+            if (totalC > 0 && totalC <= it.quantity && orgC > 0) {
+              orgClaimedCount += orgC;
+              orgItemsShare += orgC * it.unitPrice;
+            } else if (isOrgAssigned && aIds.length > 0) {
+              orgClaimedCount += 1;
+              orgItemsShare += Math.round((it.totalPrice / aIds.length) * 100) / 100;
+            }
+          });
+          const hasCoperto = updatedItems.some((it) => it.isCoperto);
+          const orgCoperto = hasCoperto && orgClaimedCount > 0 ? bill.copertoPerPerson || 0 : 0;
+          const orgBase = orgItemsShare + orgCoperto;
+          const orgTip =
+            bill.tipCustomAmount && bill.tipCustomAmount > 0
+              ? bill.tipCustomAmount
+              : bill.tipPercentage > 0
+              ? Math.round(orgBase * (bill.tipPercentage / 100) * 100) / 100
+              : 0;
+          const orgDue = Math.round((orgBase + orgTip) * 100) / 100;
+          updatedParticipants = bill.participants.map((p) =>
+            p.id === orgP.id
+              ? {
+                  ...p,
+                  status: orgDue > 0 ? ('paid' as const) : p.status,
+                  paidAmount: orgDue,
+                  paidAt: orgDue > 0 ? p.paidAt || new Date().toISOString() : p.paidAt,
+                }
+              : p
+          );
+        }
+
+        return { ...bill, items: updatedItems, participants: updatedParticipants };
       });
       return { bills };
     });
@@ -1112,6 +1206,12 @@ export const useBillStore = create<BillStoreState>()(
     let itemsShare = 0;
     let claimedItemCount = 0;
 
+    const participant = bill.participants.find((p) => p.id === participantId);
+    const isOrganizer =
+      Boolean(participant?.isOrganizer) ||
+      participantId === bill.organizerId ||
+      participantId === 'user_me';
+
     bill.items.forEach((item) => {
       if (item.isCoperto) {
         // Coperto tracked separately per seated diner if receipt has coperto item
@@ -1119,11 +1219,20 @@ export const useBillStore = create<BillStoreState>()(
       }
 
       const assignedIds = item.assignedParticipantIds || [];
-      const isAssigned = assignedIds.includes(participantId);
+      const isAssigned = isOrganizer
+        ? assignedIds.includes(participantId) ||
+          assignedIds.includes(bill.organizerId) ||
+          assignedIds.includes('user_me')
+        : assignedIds.includes(participantId);
 
       const claimedMap = item.claimedQuantities || {};
       const totalClaimedUnits = Object.values(claimedMap).reduce((sum, q) => sum + (q || 0), 0);
-      const myClaimedUnits = claimedMap[participantId] || 0;
+      const myClaimedUnits = isOrganizer
+        ? (claimedMap[participantId] ??
+           claimedMap[bill.organizerId] ??
+           claimedMap['user_me'] ??
+           0)
+        : (claimedMap[participantId] || 0);
 
       // 1. Explicit individual claiming (stepper in ItemizerScreen/GuestClaimScreen):
       // Only valid when diner claimed positive units and total claimed units across table does not exceed item quantity
@@ -1142,7 +1251,11 @@ export const useBillStore = create<BillStoreState>()(
         const count = assignedIds.length;
         const baseCents = Math.floor(totalCents / count);
         const remainderCents = totalCents % count;
-        const idx = assignedIds.indexOf(participantId);
+        let idx = assignedIds.indexOf(participantId);
+        if (idx === -1 && isOrganizer) {
+          idx = assignedIds.indexOf(bill.organizerId);
+          if (idx === -1) idx = assignedIds.indexOf('user_me');
+        }
         if (idx !== -1) {
           const shareCents = baseCents + (idx < remainderCents ? 1 : 0);
           itemsShare += shareCents / 100;
@@ -1158,12 +1271,6 @@ export const useBillStore = create<BillStoreState>()(
     const baseAmount = itemsShare + copertoShare;
 
     // Tip is only for the organizer - guest diners do not pay tips
-    const participant = bill.participants.find((p) => p.id === participantId);
-    const isOrganizer =
-      Boolean(participant?.isOrganizer) ||
-      participantId === bill.organizerId ||
-      participantId === 'user_me';
-
     let tipShare = 0;
     if (isOrganizer) {
       if (bill.tipCustomAmount !== undefined && bill.tipCustomAmount > 0) {

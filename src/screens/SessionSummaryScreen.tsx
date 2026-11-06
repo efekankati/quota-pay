@@ -75,6 +75,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
     const orgParticipant = bill.participants.find(
       (p) => p.isOrganizer || p.id === 'user_me' || p.id === bill.organizerId
     );
+    let didMarkOrganizerPaid = false;
     if (orgParticipant) {
       const orgDue = getBillShareBreakdown(bill.id, orgParticipant.id).totalDue;
       if (
@@ -87,11 +88,15 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
           orgParticipant.paymentMethod || 'card',
           orgDue
         );
+        didMarkOrganizerPaid = true;
       }
     }
 
-    // Immediately push our bill to cloud so it's guaranteed to be available for guests
-    BillSyncService.saveBillToCloud(bill);
+    // Immediately push the freshest bill state from store to cloud so it's guaranteed to be available for guests
+    if (!didMarkOrganizerPaid) {
+      const latestBill = useBillStore.getState().bills.find((b) => b.id === bill.id) || bill;
+      BillSyncService.saveBillToCloud(latestBill);
+    }
 
     const pullFromCloud = async () => {
       try {

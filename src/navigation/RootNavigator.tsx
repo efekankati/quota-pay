@@ -41,24 +41,27 @@ export const RootNavigator: React.FC = () => {
   // Check if launched directly with a bill URL on web
   const initialUrlInfo = useMemo(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.href) {
-      const parsed = DeepLinkService.parseBillUrl(window.location.href);
-      if (parsed.lang) {
-        useLanguageStore.getState().setLanguage(parsed.lang);
-      } else if (parsed.isGuest || parsed.billId || parsed.claimId) {
-        useLanguageStore.getState().syncWithSystemLanguage();
-      }
-      if (parsed.billData) {
-        const existing = useBillStore
-          .getState()
-          .bills.find((b) => b.id === (parsed.billId || parsed.billData?.id));
-        if (!existing) {
-          useBillStore.getState().upsertBill(parsed.billData);
-        }
-      }
-      return parsed;
+      return DeepLinkService.parseBillUrl(window.location.href);
     }
     return null;
   }, []);
+
+  useEffect(() => {
+    if (!initialUrlInfo) return;
+    if (initialUrlInfo.lang) {
+      useLanguageStore.getState().setLanguage(initialUrlInfo.lang);
+    } else if (initialUrlInfo.isGuest || initialUrlInfo.billId || initialUrlInfo.claimId) {
+      useLanguageStore.getState().syncWithSystemLanguage();
+    }
+    if (initialUrlInfo.billData) {
+      const existing = useBillStore
+        .getState()
+        .bills.find((b) => b.id === (initialUrlInfo.billId || initialUrlInfo.billData?.id));
+      if (!existing) {
+        useBillStore.getState().upsertBill(initialUrlInfo.billData);
+      }
+    }
+  }, [initialUrlInfo]);
 
   const [isGuestSession, setIsGuestSession] = useState<boolean>(() =>
     Boolean(initialUrlInfo?.isGuest || initialUrlInfo?.billId || initialUrlInfo?.claimId)

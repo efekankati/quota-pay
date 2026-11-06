@@ -49,14 +49,23 @@ class BillSyncServiceImpl {
       if (existingKey) {
         const cloudP = mergedParticipantsMap.get(existingKey)!;
         const isOrg = Boolean(localP.isOrganizer || cloudP.isOrganizer || existingKey === 'user_me');
-        const isPaid = isOrg ? localP.status === 'paid' : (cloudP.status === 'paid' || localP.status === 'paid');
+        const isPaid = isOrg
+          ? Boolean(
+              localP.status === 'paid' ||
+                cloudP.status === 'paid' ||
+                (localP.paidAmount || 0) > 0 ||
+                (cloudP.paidAmount || 0) > 0
+            )
+          : Boolean(cloudP.status === 'paid' || localP.status === 'paid');
         mergedParticipantsMap.set(existingKey, {
           ...cloudP,
           ...localP,
           id: existingKey,
           status: isPaid ? 'paid' : localP.status,
           paidAmount: isOrg
-            ? (localP.paidAmount !== undefined ? localP.paidAmount : cloudP.paidAmount)
+            ? (localP.paidAmount && localP.paidAmount > 0
+                ? localP.paidAmount
+                : cloudP.paidAmount || localP.paidAmount || 0)
             : (isPaid
                 ? Math.max(cloudP.paidAmount || 0, localP.paidAmount || 0)
                 : localP.paidAmount),

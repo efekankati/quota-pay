@@ -132,16 +132,53 @@ export class DeepLinkService {
         ...(bill.organizerIban ? { ib: bill.organizerIban } : {}),
         ...(bill.organizerBankName ? { bn: bill.organizerBankName } : {}),
         ...(bill.organizerAccountHolder ? { ah: bill.organizerAccountHolder } : {}),
-        p: bill.participants.map((p) => [
-          p.name,
-          p.isOrganizer ? 1 : 0,
-          p.status === 'paid' ? 1 : 0,
-          p.paidAmount || 0,
-        ]),
+        p: bill.participants.map((p) => {
+          const isOrg = Boolean(p.isOrganizer || p.id === bill.organizerId || p.id === 'user_me');
+          let orgShare = p.paidAmount || 0;
+          if (isOrg && orgShare <= 0) {
+            let sub = 0;
+            let hasClaim = false;
+            bill.items.forEach((it) => {
+              if (it.isCoperto) return;
+              const q =
+                it.claimedQuantities?.[p.id] ??
+                it.claimedQuantities?.[bill.organizerId || 'user_me'] ??
+                it.claimedQuantities?.['user_me'] ??
+                (it.assignedParticipantIds?.includes(p.id) ||
+                it.assignedParticipantIds?.includes(bill.organizerId || 'user_me') ||
+                it.assignedParticipantIds?.includes('user_me')
+                  ? 1
+                  : 0);
+              if (q > 0) {
+                hasClaim = true;
+                sub += q * it.unitPrice;
+              }
+            });
+            if (hasClaim && bill.items.some((it) => it.isCoperto)) {
+              sub += bill.copertoPerPerson || 0;
+            }
+            orgShare = Math.round(sub * 100) / 100;
+          }
+          return [
+            p.name,
+            isOrg ? 1 : 0,
+            isOrg ? (p.status === 'paid' || orgShare > 0 ? 1 : 0) : (p.status === 'paid' ? 1 : 0),
+            orgShare,
+          ];
+        }),
         it: bill.items.map((it) => {
+          const orgP = bill.participants.find(
+            (p) => p.isOrganizer || p.id === bill.organizerId || p.id === 'user_me'
+          );
           const orgClaimed =
+            (orgP ? it.claimedQuantities?.[orgP.id] : undefined) ??
             it.claimedQuantities?.[bill.organizerId || 'user_me'] ??
-            (it.assignedParticipantIds?.includes(bill.organizerId || 'user_me') ? 1 : 0);
+            it.claimedQuantities?.['user_me'] ??
+            ((orgP && it.assignedParticipantIds?.includes(orgP.id)) ||
+            it.assignedParticipantIds?.includes(bill.organizerId || 'user_me') ||
+            it.assignedParticipantIds?.includes('user_me')
+              ? 1
+              : 0);
           return [
             it.name,
             it.quantity,
@@ -227,6 +264,8 @@ export class DeepLinkService {
 
         let runningSubtotal = 0;
         let runningCopertoTotal = 0;
+        let runningOrgSubtotal = 0;
+        let orgHasClaimed = false;
 
         const items: LineItem[] = (raw.it || []).map((arr: any, idx: number) => {
           const name = String(arr[0]);
@@ -240,6 +279,10 @@ export class DeepLinkService {
             runningCopertoTotal += totalPrice;
           } else {
             runningSubtotal += totalPrice;
+            if (orgClaimed > 0) {
+              orgHasClaimed = true;
+              runningOrgSubtotal += orgClaimed * unitPrice;
+            }
           }
 
           const assigned = orgClaimed > 0 ? ['user_me'] : [];
@@ -258,6 +301,20 @@ export class DeepLinkService {
             claimedQuantities: claimedMap,
           };
         });
+
+        const resolvedCopertoPerPerson =
+          raw.cp !== undefined
+            ? Number(raw.cp) || 0
+            : runningCopertoTotal > 0
+            ? runningCopertoTotal
+            : 0;
+        const computedOrgShare = Math.round(
+          (runningOrgSubtotal + (orgHasClaimed && runningCopertoTotal > 0 ? resolvedCopertoPerPerson : 0)) * 100
+        ) / 100;
+        if ((!organizerParticipant.paidAmount || organizerParticipant.paidAmount <= 0) && computedOrgShare > 0) {
+          organizerParticipant.paidAmount = computedOrgShare;
+          organizerParticipant.status = 'paid';
+        }
 
         const itemsGrandTotal = Math.round((runningSubtotal + runningCopertoTotal) * 100) / 100;
         const grandTotal =
@@ -359,16 +416,14 @@ export class DeepLinkService {
    */
   public static getLanDevOrigin(): string {
     // 1. If a public AWS / cloud proxy server is configured (EXPO_PUBLIC_AI_PROXY_URL),
-    // route shared guest links directly to the AWS server (converting raw IPv4 to .sslip.io
-    // so WhatsApp, Telegram, and SMS recognize the link as a clickable domain on any 5G/Wi-Fi network).
+    // route shared guest links directly to the AWS server (using direct IPv4 or domain
+    // to avoid router DNS search-domain hijacking on .sslip.io and browser HTTPS auto-upgrade on port 80).
     if (ENV.AI_PROXY_URL && ENV.AI_PROXY_URL.trim().length > 0) {
       try {
         const parsedCloud = new URL(ENV.AI_PROXY_URL.trim());
         const host = parsedCloud.hostname;
-        const isRawIpv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
-        const clickableHost = isRawIpv4 ? `${host}.sslip.io` : host;
         const portSuffix = parsedCloud.port ? `:${parsedCloud.port}` : '';
-        return `${parsedCloud.protocol}//${clickableHost}${portSuffix}`;
+        return `${parsedCloud.protocol}//${host}${portSuffix}`;
       } catch {
         // fallback below
       }

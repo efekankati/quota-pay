@@ -30,6 +30,7 @@ import { useLanguageStore } from '../store/useLanguageStore';
 import { Header } from '../components/common/Header';
 import { Avatar } from '../components/common/Avatar';
 import { BillSyncService } from '../services/sync/BillSyncService';
+import { DeepLinkService } from '../services/deepLink/DeepLinkService';
 import { RADIUS, SHADOWS, SPACING, TYPOGRAPHY } from '../config/theme';
 import { useHaptics } from '../hooks/useHaptics';
 
@@ -113,17 +114,34 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
     };
   }, [billId, upsertBill]);
 
+  const urlFallbackBill = useMemo(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.href) {
+      return DeepLinkService.parseBillUrl(window.location.href).billData || null;
+    }
+    return null;
+  }, []);
+
   const existingBillInStore = billId ? bills.find((b) => b.id === billId) : null;
   const bill =
     existingBillInStore ||
+    urlFallbackBill ||
     (isInitialCloudChecked
       ? ensureBillExists(billId || (bills[0]?.id ? bills[0].id : `bill_${Date.now()}`))
       : null);
 
   const organizer =
-    bill?.participants.find((p) => p.isOrganizer || p.id === 'user_me') ||
-    bill?.participants[0];
-  const organizerPaidAmount = organizer?.paidAmount || 0;
+    bill?.participants.find(
+      (p) => p.isOrganizer || p.id === 'user_me' || p.id === bill.organizerId
+    ) || bill?.participants[0];
+  const organizerBreakdown =
+    bill && organizer ? getBillShareBreakdown(bill.id, organizer.id) : null;
+  const organizerPaidAmount = bill
+    ? bill.isManual
+      ? Math.max(organizer?.paidAmount || 0, organizerBreakdown?.totalDue || 0)
+      : organizerBreakdown && organizerBreakdown.totalDue > 0
+      ? organizerBreakdown.totalDue
+      : organizer?.paidAmount || 0
+    : 0;
   const grandTotal = bill?.taxSummary?.grandTotal || 0;
 
   const totalPaidByFriends =
@@ -160,6 +178,46 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
 
   const [typedName, setTypedName] = useState('');
   const [activeFilter, setActiveFilter] = useState<GuestFilter>('all');
+
+  // Filter items (must be declared before any early return so hook order never changes between renders)
+  const filteredItems = useMemo(() => {
+    if (!bill) return [];
+    return bill.items.filter((item) => {
+      if (item.isCoperto) return false; // Coperto is handled as banner & auto-breakdown
+
+      const organizerQty =
+        item.claimedQuantities?.[organizer?.id || ''] ??
+        item.claimedQuantities?.[bill.organizerId || ''] ??
+        item.claimedQuantities?.['user_me'] ??
+        ((organizer && item.assignedParticipantIds.includes(organizer.id)) ||
+        (bill.organizerId && item.assignedParticipantIds.includes(bill.organizerId)) ||
+        item.assignedParticipantIds.includes('user_me')
+          ? 1
+          : 0);
+      const isOrganizerCoveredFull =
+        item.quantity === 1 ? organizerQty > 0 : organizerQty >= item.quantity;
+
+      const myQty = selectedGuestId
+        ? item.claimedQuantities?.[selectedGuestId] ??
+          (item.assignedParticipantIds.includes(selectedGuestId) ? 1 : 0)
+        : 0;
+
+      if (activeFilter === 'mine') {
+        return myQty > 0;
+      }
+      if (activeFilter === 'available') {
+        if (isOrganizerCoveredFull) return false;
+        let totalClaimed = 0;
+        if (item.claimedQuantities) {
+          Object.values(item.claimedQuantities).forEach((q) => (totalClaimed += q));
+        } else {
+          totalClaimed = item.assignedParticipantIds.length;
+        }
+        return totalClaimed < item.quantity || myQty > 0;
+      }
+      return true;
+    });
+  }, [bill, organizer, selectedGuestId, activeFilter]);
 
   if (!bill) {
     return (
@@ -227,39 +285,6 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
     setSelectedGuestId(participantId);
     successNotification();
   };
-
-  // Filter items
-  const filteredItems = useMemo(() => {
-    return bill.items.filter((item) => {
-      if (item.isCoperto) return false; // Coperto is handled as banner & auto-breakdown
-
-      const organizerQty =
-        item.claimedQuantities?.[organizer?.id || ''] ??
-        (organizer && item.assignedParticipantIds.includes(organizer.id) ? 1 : 0);
-      const isOrganizerCoveredFull =
-        item.quantity === 1 ? organizerQty > 0 : organizerQty >= item.quantity;
-
-      const myQty = selectedGuestId
-        ? item.claimedQuantities?.[selectedGuestId] ??
-          (item.assignedParticipantIds.includes(selectedGuestId) ? 1 : 0)
-        : 0;
-
-      if (activeFilter === 'mine') {
-        return myQty > 0;
-      }
-      if (activeFilter === 'available') {
-        if (isOrganizerCoveredFull) return false;
-        let totalClaimed = 0;
-        if (item.claimedQuantities) {
-          Object.values(item.claimedQuantities).forEach((q) => (totalClaimed += q));
-        } else {
-          totalClaimed = item.assignedParticipantIds.length;
-        }
-        return totalClaimed < item.quantity || myQty > 0;
-      }
-      return true;
-    });
-  }, [bill.items, organizer, selectedGuestId, activeFilter]);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -671,7 +696,13 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
                 // Organizer claims
                 const organizerQty =
                   item.claimedQuantities?.[organizer?.id || ''] ??
-                  (organizer && item.assignedParticipantIds.includes(organizer.id) ? 1 : 0);
+                  item.claimedQuantities?.[bill.organizerId || ''] ??
+                  item.claimedQuantities?.['user_me'] ??
+                  ((organizer && item.assignedParticipantIds.includes(organizer.id)) ||
+                  (bill.organizerId && item.assignedParticipantIds.includes(bill.organizerId)) ||
+                  item.assignedParticipantIds.includes('user_me')
+                    ? 1
+                    : 0);
                 const isOrganizerFullyClaimed =
                   item.quantity === 1 ? organizerQty > 0 : organizerQty >= item.quantity;
 
