@@ -27,6 +27,16 @@ android/build/
 # TypeScript
 *.tsbuildinfo
 
+# Terraform & FinOps Runtime Logs
+.terraform/
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+cost_guard.log
+__pycache__/
+*.py[cod]
+
 # OS
 .DS_Store
 Thumbs.db
