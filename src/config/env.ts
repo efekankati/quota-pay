@@ -30,7 +30,11 @@ export const ENV = {
 
   // API & Deep Links
   API_BASE_URL: process.env.EXPO_PUBLIC_API_BASE_URL || 'https://api.quota.eu/v1',
-  AI_PROXY_URL: process.env.EXPO_PUBLIC_AI_PROXY_URL || 'http://15.160.52.56',
+  AI_PROXY_URL:
+    process.env.EXPO_PUBLIC_AI_PROXY_URL &&
+    !process.env.EXPO_PUBLIC_AI_PROXY_URL.includes('15.161.153.46')
+      ? process.env.EXPO_PUBLIC_AI_PROXY_URL
+      : 'http://15.160.52.56',
   DEEP_LINK_DOMAIN: process.env.EXPO_PUBLIC_DEEP_LINK_DOMAIN || 'quota.eu',
   LOCAL_DEV_HOST: process.env.EXPO_PUBLIC_LOCAL_DEV_HOST || 'desktop-v1197o1.fritz.box',
   LOCAL_DEV_IP: process.env.EXPO_PUBLIC_LOCAL_DEV_IP || '192.168.1.56',
