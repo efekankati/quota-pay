@@ -1,5 +1,3 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
-
 export interface GeminiUsageMetadata {
   promptTokenCount?: number;
   candidatesTokenCount?: number;
@@ -26,9 +24,7 @@ export interface LedgerStatus {
 }
 
 export class SupabaseTokenLedger {
-  private static supabase: SupabaseClient | null = null;
-
-  // Local atomic mirror in case Supabase table migration is pending or unreachable
+  // Local atomic mirror synced asynchronously with Supabase PostgreSQL `ai_token_ledger`
   private static localLedger: LedgerStatus = {
     id: 'global',
     total_tokens: 0,
@@ -39,39 +35,50 @@ export class SupabaseTokenLedger {
     updated_at: new Date().toISOString(),
   };
 
+  private static lastCloudSyncMs = 0;
+
   public static getMaxBudgetUsd(): number {
     const val = Number(process.env.AI_MAX_BUDGET_USD || 5.0);
     return Number.isFinite(val) && val > 0 ? val : 5.0;
   }
 
-  private static getClient(): SupabaseClient | null {
-    if (this.supabase) return this.supabase;
-
+  private static getSupabaseConfig(): { url: string; key: string } | null {
     const rawUrl = (
       process.env.SUPABASE_URL ||
       process.env.EXPO_PUBLIC_SUPABASE_URL ||
       'https://nnamvsnorjbsruwhkker.supabase.co'
     ).trim();
-    const supabaseUrl = rawUrl.includes('supbase.com')
+    const url = (rawUrl.includes('supbase.com')
       ? rawUrl.replace('supbase.com', 'supabase.co')
-      : rawUrl;
+      : rawUrl
+    ).replace(/\/+$/, '');
 
-    const supabaseKey = (
+    const key = (
       process.env.SUPABASE_SERVICE_ROLE_KEY ||
       process.env.SUPABASE_ANON_KEY ||
       process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
       ''
     ).trim();
 
-    if (supabaseUrl && supabaseKey) {
-      this.supabase = createClient(supabaseUrl, supabaseKey, {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-        },
-      });
+    if (!url || !key) return null;
+    return { url, key };
+  }
+
+  /**
+   * 0ms synchronous check of the soft-cap ledger mirror (triggers background refresh if >10s old)
+   */
+  public static getLedgerStatusFast(): LedgerStatus {
+    const maxBudget = this.getMaxBudgetUsd();
+    this.localLedger.max_budget_usd = maxBudget;
+    this.localLedger.budget_exceeded =
+      this.localLedger.is_paused || this.localLedger.estimated_cost_usd >= maxBudget;
+
+    if (Date.now() - this.lastCloudSyncMs > 10_000) {
+      this.lastCloudSyncMs = Date.now();
+      this.getLedgerStatus().catch(() => {});
     }
-    return this.supabase;
+
+    return { ...this.localLedger };
   }
 
   /**
@@ -86,12 +93,10 @@ export class SupabaseTokenLedger {
 
     const totalTokens = promptTokenCount + candidatesTokenCount + thoughtsTokenCount;
 
-    // Gemini Flash multimodal pricing (~$0.15 / 1M input tokens, ~$0.60 / 1M output+thought tokens)
     const inputCost = (promptTokenCount / 1_000_000) * 0.15;
     const outputCost = ((candidatesTokenCount + thoughtsTokenCount) / 1_000_000) * 0.60;
     const rawCost = inputCost + outputCost;
 
-    // Apply micro-cost floor of $0.000005 if tokens > 0
     const estimatedCostUsd =
       totalTokens > 0 ? Number(Math.max(rawCost, 0.000005).toFixed(6)) : 0;
 
@@ -105,41 +110,56 @@ export class SupabaseTokenLedger {
   }
 
   /**
-   * Fetches current ledger state from Supabase PostgreSQL `ai_token_ledger`
+   * Fetches current ledger state from Supabase PostgreSQL `ai_token_ledger` via direct REST API
+   * (compatible with all Node.js versions without requiring a WebSocket polyfill).
    */
   public static async getLedgerStatus(): Promise<LedgerStatus> {
     const maxBudget = this.getMaxBudgetUsd();
     this.localLedger.max_budget_usd = maxBudget;
+    this.lastCloudSyncMs = Date.now();
 
-    const client = this.getClient();
-    if (client) {
+    const cfg = this.getSupabaseConfig();
+    if (cfg) {
       try {
-        const { data, error } = await client
-          .from('ai_token_ledger')
-          .select('id, total_tokens, estimated_cost_usd, is_paused, updated_at')
-          .eq('id', 'global')
-          .maybeSingle();
+        const res = await fetch(
+          `${cfg.url}/rest/v1/ai_token_ledger?id=eq.global&select=id,total_tokens,estimated_cost_usd,is_paused,updated_at`,
+          {
+            method: 'GET',
+            headers: {
+              apikey: cfg.key,
+              Authorization: `Bearer ${cfg.key}`,
+              Accept: 'application/json',
+            },
+          }
+        );
 
-        if (!error && data) {
-          const totalTokens = Number(data.total_tokens || 0);
-          const estimatedCostUsd = Number(data.estimated_cost_usd || 0);
-          const isPaused = Boolean(data.is_paused) || estimatedCostUsd >= maxBudget;
+        if (res.ok) {
+          const rows: any = await res.json();
+          const data = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+          if (data) {
+            const totalTokens = Number(data.total_tokens || 0);
+            const estimatedCostUsd = Number(data.estimated_cost_usd || 0);
+            const isPaused = Boolean(data.is_paused) || estimatedCostUsd >= maxBudget;
 
-          this.localLedger = {
-            id: String(data.id || 'global'),
-            total_tokens: Math.max(totalTokens, this.localLedger.total_tokens),
-            estimated_cost_usd: Math.max(estimatedCostUsd, this.localLedger.estimated_cost_usd),
-            is_paused: isPaused || this.localLedger.is_paused,
-            max_budget_usd: maxBudget,
-            budget_exceeded:
-              isPaused ||
-              this.localLedger.is_paused ||
-              Math.max(estimatedCostUsd, this.localLedger.estimated_cost_usd) >= maxBudget,
-            updated_at: String(data.updated_at || new Date().toISOString()),
-          };
+            this.localLedger = {
+              id: String(data.id || 'global'),
+              total_tokens: Math.max(totalTokens, this.localLedger.total_tokens),
+              estimated_cost_usd: Math.max(
+                estimatedCostUsd,
+                this.localLedger.estimated_cost_usd
+              ),
+              is_paused: isPaused || this.localLedger.is_paused,
+              max_budget_usd: maxBudget,
+              budget_exceeded:
+                isPaused ||
+                this.localLedger.is_paused ||
+                Math.max(estimatedCostUsd, this.localLedger.estimated_cost_usd) >= maxBudget,
+              updated_at: String(data.updated_at || new Date().toISOString()),
+            };
+          }
         }
-      } catch (err) {
-        console.warn('[SupabaseTokenLedger] Read fallback to local memory ledger:', err);
+      } catch {
+        // Fallback to local memory ledger
       }
     }
 
@@ -147,8 +167,8 @@ export class SupabaseTokenLedger {
   }
 
   /**
-   * Invokes the Supabase PostgreSQL RPC `record_gemini_tokens(tokens_to_add, cost_to_add, max_budget)`
-   * to atomically increment the token ledger and return `budget_exceeded BOOLEAN`.
+   * Atomically updates local memory mirror in 0ms and invokes the Supabase RPC
+   * `record_gemini_tokens(tokens_to_add, cost_to_add, max_budget)`.
    */
   public static async recordGeminiTokens(
     tokensToAdd: number,
@@ -159,7 +179,7 @@ export class SupabaseTokenLedger {
     const safeTokens = Math.max(Math.round(tokensToAdd || 0), 0);
     const safeCost = Math.max(Number(costToAdd || 0), 0);
 
-    // Update local mirror first
+    // 1. Immediate 0ms atomic update in memory
     this.localLedger.total_tokens += safeTokens;
     this.localLedger.estimated_cost_usd = Number(
       (this.localLedger.estimated_cost_usd + safeCost).toFixed(6)
@@ -172,40 +192,38 @@ export class SupabaseTokenLedger {
       this.localLedger.budget_exceeded = true;
     }
 
-    const client = this.getClient();
-    if (client) {
-      try {
-        const { data: rpcBudgetExceeded, error: rpcError } = await client.rpc(
-          'record_gemini_tokens',
-          {
-            tokens_to_add: safeTokens,
-            cost_to_add: safeCost,
-            max_budget: maxBudget,
-          }
-        );
-
-        if (!rpcError && typeof rpcBudgetExceeded === 'boolean') {
-          if (rpcBudgetExceeded) {
-            this.localLedger.is_paused = true;
-            this.localLedger.budget_exceeded = true;
-          }
-          // Refresh canonical row values
-          await this.getLedgerStatus();
-        } else if (rpcError) {
-          console.warn(
-            '[SupabaseTokenLedger] RPC record_gemini_tokens warning (using local mirror):',
-            rpcError.message
-          );
-        }
-      } catch (err) {
-        console.warn('[SupabaseTokenLedger] RPC invocation error (using local mirror):', err);
-      }
-    }
-
     const budgetExceeded =
       this.localLedger.is_paused ||
       this.localLedger.budget_exceeded ||
       this.localLedger.estimated_cost_usd >= maxBudget;
+
+    // 2. Non-blocking cloud RPC sync so `/api/ai/parse-receipt` returns to the phone with 0ms DB wait
+    const cfg = this.getSupabaseConfig();
+    if (cfg) {
+      fetch(`${cfg.url}/rest/v1/rpc/record_gemini_tokens`, {
+        method: 'POST',
+        headers: {
+          apikey: cfg.key,
+          Authorization: `Bearer ${cfg.key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          tokens_to_add: safeTokens,
+          cost_to_add: safeCost,
+          max_budget: maxBudget,
+        }),
+      })
+        .then(async (res) => {
+          if (res.ok) {
+            const rpcBudgetExceeded = await res.json();
+            if (rpcBudgetExceeded === true) {
+              this.localLedger.is_paused = true;
+              this.localLedger.budget_exceeded = true;
+            }
+          }
+        })
+        .catch(() => {});
+    }
 
     return {
       budgetExceeded,

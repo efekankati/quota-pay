@@ -22,12 +22,22 @@ export interface GeminiReceiptResult {
 }
 
 export class GeminiReceiptService {
+  private static fastestProxyBaseUrl: string | null = null;
+
   /**
    * Resolves candidate backend proxy URLs for `/api/ai/*` endpoints.
-   * The client application never calls Google's Gemini API directly or exposes GEMINI_API_KEY.
+   * Never includes `localhost` on physical mobile devices (where `localhost` is the phone itself).
    */
   public static getProxyCandidateBaseUrls(): string[] {
     const candidates: string[] = [];
+
+    if (this.fastestProxyBaseUrl) {
+      candidates.push(this.fastestProxyBaseUrl);
+    }
+
+    if (ENV.LOCAL_DEV_IP) {
+      candidates.push(`http://${ENV.LOCAL_DEV_IP}:3000`);
+    }
 
     if (ENV.AI_PROXY_URL && ENV.AI_PROXY_URL.trim().length > 0) {
       candidates.push(ENV.AI_PROXY_URL.trim().replace(/\/+$/, ''));
@@ -38,19 +48,51 @@ export class GeminiReceiptService {
       if (window.location.port === '8081' || window.location.port === '19006') {
         candidates.push(`http://${window.location.hostname || 'localhost'}:3000`);
       }
-    }
-
-    candidates.push('http://localhost:3000');
-    if (ENV.LOCAL_DEV_IP) {
-      candidates.push(`http://${ENV.LOCAL_DEV_IP}:3000`);
+      candidates.push('http://localhost:3000');
     }
 
     return Array.from(new Set(candidates));
   }
 
   /**
-   * Server-side proxy manages the Gemini API key; client does not hold raw credentials.
+   * Races a tiny 1200ms `/api/health` ping across candidate proxy servers in parallel
+   * so receipt parsing immediately uses the lowest-latency live server without waiting
+   * on sequential connection timeouts.
    */
+  public static async resolveOrderedProxyUrls(): Promise<string[]> {
+    const candidates = this.getProxyCandidateBaseUrls();
+    if (candidates.length <= 1) return candidates;
+
+    try {
+      const checks = candidates.map(async (baseUrl) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 1200);
+        try {
+          const res = await fetch(`${baseUrl}/api/health`, {
+            method: 'GET',
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (res.ok) return baseUrl;
+          throw new Error('Unhealthy');
+        } catch (e) {
+          clearTimeout(timer);
+          throw e;
+        }
+      });
+
+      const winner = await Promise.any(checks);
+      if (winner) {
+        this.fastestProxyBaseUrl = winner;
+        return [winner, ...candidates.filter((u) => u !== winner)];
+      }
+    } catch {
+      // Fallback to default candidate order
+    }
+
+    return candidates;
+  }
+
   public static getApiKey(): string {
     return 'SERVER_MANAGED_PROXY';
   }
@@ -60,8 +102,8 @@ export class GeminiReceiptService {
   }
 
   /**
-   * Parses a receipt image via the secure backend proxy (`POST /api/ai/parse-receipt`),
-   * which records real-time token usage into the Supabase `ai_token_ledger` via `record_gemini_tokens`.
+   * Parses a receipt image via the fastest healthy backend proxy (`POST /api/ai/parse-receipt`),
+   * recording real-time token usage into the Supabase `ai_token_ledger`.
    */
   public static async parseReceipt(
     base64Data: string,
@@ -78,7 +120,7 @@ export class GeminiReceiptService {
       cleanBase64 = base64Data.replace(/^data:image\/[a-zA-Z]+;base64,/, '').trim();
     }
 
-    const baseUrls = this.getProxyCandidateBaseUrls();
+    const baseUrls = await this.resolveOrderedProxyUrls();
     let lastError: Error | null = null;
 
     for (const baseUrl of baseUrls) {
@@ -97,9 +139,7 @@ export class GeminiReceiptService {
 
         if (response.status === 429) {
           const payload = await response.json().catch(() => ({}));
-          throw new Error(
-            payload?.error || 'AI Quota Paused by Administrator'
-          );
+          throw new Error(payload?.error || 'AI Quota Paused by Administrator');
         }
 
         if (!response.ok) {
@@ -116,11 +156,11 @@ export class GeminiReceiptService {
           throw new Error('Nessuna voce rilevata nello scontrino.');
         }
 
+        this.fastestProxyBaseUrl = baseUrl;
         return parsed;
       } catch (err: any) {
         lastError = err;
         const msg = String(err?.message || err);
-        // Immediate circuit-breaker halt on HTTP 429 Soft Cap
         if (msg.includes('AI Quota Paused by Administrator')) {
           throw new Error('AI Quota Paused by Administrator');
         }

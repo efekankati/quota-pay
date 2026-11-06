@@ -21,12 +21,9 @@ export interface GeminiReceiptResult {
 
 const DEFAULT_FALLBACK_MODELS = [
   'gemini-3.8-flash',
-  'gemini-flash-latest',
   'gemini-3.5-flash',
   'gemini-3.1-flash-lite',
-  'gemini-3.8-flash-lite',
-  'gemini-3.8-pro',
-  'gemini-3.8',
+  'gemini-flash-latest',
   'gemini-3.5-flash-lite',
 ];
 
@@ -40,8 +37,9 @@ const LANGUAGE_NAMES: Record<string, string> = {
 };
 
 export class ServerGeminiProxy {
-  private static cachedWorkingModel: string | null = null;
-  private static cachedAvailableModels: string[] = [];
+  // Pre-seeded with gemini-3.8-flash so the hot path skips ListModels round-trip latency
+  private static cachedWorkingModel: string | null = 'gemini-3.8-flash';
+  private static cachedAvailableModels: string[] = [...DEFAULT_FALLBACK_MODELS];
 
   public static getServerApiKey(): string {
     return (
@@ -49,76 +47,6 @@ export class ServerGeminiProxy {
       process.env.EXPO_PUBLIC_GEMINI_API_KEY ||
       ''
     ).trim();
-  }
-
-  private static isReceiptCompatibleModel(name: string): boolean {
-    const lower = name.toLowerCase();
-    if (lower.includes('-image') || lower.includes('imagen')) return false;
-    if (lower.includes('-tts') || lower.includes('-audio') || lower.includes('speech')) return false;
-    if (lower.includes('embedding') || lower.includes('embed')) return false;
-    if (
-      lower.includes('2.5-flash-lite') ||
-      lower.includes('gemini-2.5') ||
-      lower.includes('gemini-2.0') ||
-      lower.includes('gemini-1.5')
-    ) {
-      return false;
-    }
-    return true;
-  }
-
-  public static async discoverAvailableModels(apiKey: string): Promise<string[]> {
-    if (this.cachedAvailableModels.length > 0) {
-      return this.cachedAvailableModels;
-    }
-
-    try {
-      const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
-      const response = await fetch(listUrl);
-      if (response.ok) {
-        const data: any = await response.json();
-        const modelsList = Array.isArray(data.models) ? data.models : [];
-
-        const validModels = modelsList
-          .filter(
-            (m: any) =>
-              Array.isArray(m.supportedGenerationMethods) &&
-              m.supportedGenerationMethods.includes('generateContent')
-          )
-          .map((m: any) => String(m.name || '').replace(/^models\//, '').trim())
-          .filter((name: string) => name.length > 0 && this.isReceiptCompatibleModel(name));
-
-        if (validModels.length > 0) {
-          validModels.sort((a: string, b: string) => {
-            const getScore = (name: string) => {
-              const lower = name.toLowerCase();
-              if (lower === 'gemini-3.8-flash' || lower.includes('3.8-flash')) return 200;
-              if (lower === 'gemini-flash-latest') return 198;
-              if (lower === 'gemini-3.8-flash-lite' || lower.includes('3.8-flash-lite')) return 195;
-              if (lower.includes('3.8-pro')) return 190;
-              if (lower.includes('3.8')) return 185;
-              if (lower === 'gemini-3.5-flash') return 130;
-              if (lower === 'gemini-3.1-flash-lite') return 125;
-              if (lower === 'gemini-3.5-flash-lite') return 120;
-              if (lower.includes('3.5-flash')) return 115;
-              if (lower.includes('3.0-flash')) return 110;
-              if (lower.includes('flash')) return 90;
-              if (lower.includes('3.5-pro')) return 72;
-              if (lower.includes('pro')) return 50;
-              return 10;
-            };
-            return getScore(b) - getScore(a);
-          });
-
-          this.cachedAvailableModels = validModels;
-          return validModels;
-        }
-      }
-    } catch (err) {
-      console.warn('[ServerGeminiProxy] Could not list models dynamically:', err);
-    }
-
-    return DEFAULT_FALLBACK_MODELS;
   }
 
   public static async parseReceipt(
@@ -174,15 +102,11 @@ IMPORTANT EXTRACTION RULES:
 7. Every item must have positive numeric "quantity", "unitPrice", and "totalPrice". If quantity is not shown, use 1.
 `;
 
-    const discovered = await this.discoverAvailableModels(apiKey);
     const modelsToTry: string[] = [];
-    if (this.cachedWorkingModel && discovered.includes(this.cachedWorkingModel)) {
+    if (this.cachedWorkingModel) {
       modelsToTry.push(this.cachedWorkingModel);
     }
-    for (const m of discovered) {
-      if (!modelsToTry.includes(m)) modelsToTry.push(m);
-    }
-    for (const m of DEFAULT_FALLBACK_MODELS) {
+    for (const m of this.cachedAvailableModels) {
       if (!modelsToTry.includes(m)) modelsToTry.push(m);
     }
 
@@ -221,10 +145,6 @@ IMPORTANT EXTRACTION RULES:
         if (errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota')) {
           throw new Error('Quota Gemini API esaurita. Riprova tra poco.');
         }
-
-        if (errMsg.includes('503') || errMsg.includes('UNAVAILABLE')) {
-          await new Promise((r) => setTimeout(r, 350));
-        }
       }
     }
 
@@ -239,170 +159,161 @@ IMPORTANT EXTRACTION RULES:
     mimeType: string
   ): Promise<{ result: GeminiReceiptResult; usageMetadata?: GeminiUsageMetadata }> {
     const cleanModel = model.replace(/^models\//, '').trim();
-    const endpoints = [
-      `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${apiKey}`,
-      `https://generativelanguage.googleapis.com/v1/models/${cleanModel}:generateContent?key=${apiKey}`,
-    ];
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${apiKey}`;
 
     let lastFetchError: Error | null = null;
 
-    for (const url of endpoints) {
-      for (const useJsonMime of [true, false]) {
-        const requestBody: any = {
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                { text: prompt },
-                {
-                  inline_data: {
-                    mime_type: mimeType,
-                    data: base64Data,
-                  },
+    // First attempt with fast thinkingBudget: 0 + JSON mode; fallback if model rejects thinkingConfig
+    for (const useZeroThinking of [true, false]) {
+      const requestBody: any = {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: prompt },
+              {
+                inline_data: {
+                  mime_type: mimeType,
+                  data: base64Data,
                 },
-              ],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.1,
+              },
+            ],
           },
-        };
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: 'application/json',
+          ...(useZeroThinking ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+        },
+      };
 
-        if (useJsonMime) {
-          requestBody.generationConfig.responseMimeType = 'application/json';
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        let parsedError: any = null;
+        try {
+          parsedError = JSON.parse(errText);
+        } catch {
+          parsedError = null;
         }
+        const message = parsedError?.error?.message || `HTTP ${response.status}: ${errText}`;
+        lastFetchError = new Error(`[${cleanModel}] ${message}`);
 
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody),
-        });
-
-        if (!response.ok) {
-          const errText = await response.text();
-          let parsedError: any = null;
-          try {
-            parsedError = JSON.parse(errText);
-          } catch {
-            parsedError = null;
-          }
-          const message = parsedError?.error?.message || `HTTP ${response.status}: ${errText}`;
-          lastFetchError = new Error(`[${cleanModel}] ${message}`);
-
-          if (message.includes('JSON mode is not enabled') && useJsonMime) {
-            continue;
-          }
-          if (response.status === 404) {
-            break;
-          }
-          throw lastFetchError;
+        if (useZeroThinking && (message.includes('thinking') || response.status === 400)) {
+          continue;
         }
+        throw lastFetchError;
+      }
 
-        const data: any = await response.json();
-        const usageMetadata: GeminiUsageMetadata | undefined = data?.usageMetadata;
-        const candidateParts: any[] = data?.candidates?.[0]?.content?.parts || [];
+      const data: any = await response.json();
+      const usageMetadata: GeminiUsageMetadata | undefined = data?.usageMetadata;
+      const candidateParts: any[] = data?.candidates?.[0]?.content?.parts || [];
 
-        let candidateText = candidateParts
-          .filter((p) => p && typeof p.text === 'string' && !p.thought)
-          .map((p) => p.text)
+      let candidateText = candidateParts
+        .filter((p) => p && typeof p.text === 'string' && !p.thought)
+        .map((p) => p.text)
+        .join('\n')
+        .trim();
+
+      if (!candidateText) {
+        candidateText = candidateParts
+          .map((p) => (p && typeof p.text === 'string' ? p.text : ''))
           .join('\n')
           .trim();
-
-        if (!candidateText) {
-          candidateText = candidateParts
-            .map((p) => (p && typeof p.text === 'string' ? p.text : ''))
-            .join('\n')
-            .trim();
-        }
-
-        if (!candidateText) {
-          throw new Error('Risposta vuota da Gemini AI.');
-        }
-
-        let cleanedText = candidateText
-          .replace(/^```json\s*/i, '')
-          .replace(/^```\s*/i, '')
-          .replace(/\s*```$/i, '')
-          .trim();
-
-        const firstBrace = cleanedText.indexOf('{');
-        const lastBrace = cleanedText.lastIndexOf('}');
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-          cleanedText = cleanedText.substring(firstBrace, lastBrace + 1);
-        }
-
-        const parsedJson = JSON.parse(cleanedText);
-        const rawItems: any[] = Array.isArray(parsedJson.items) ? parsedJson.items : [];
-        const items: GeminiParsedItem[] = rawItems
-          .filter((it) => it && (it.name || it.title))
-          .map((it) => {
-            const qty = Math.max(Number(it.quantity) || 1, 1);
-            const total = Math.max(Number(it.totalPrice) || Number(it.price) || 0, 0);
-            const unit =
-              Number(it.unitPrice) || (total > 0 ? Math.round((total / qty) * 100) / 100 : 0);
-            const isCop =
-              Boolean(it.isCoperto) ||
-              /coperto|servizio|pane|cover charge/i.test(String(it.name || ''));
-
-            return {
-              name: String(it.name || it.title || 'Voce').trim(),
-              quantity: qty,
-              unitPrice: unit,
-              totalPrice: total > 0 ? total : Math.round(unit * qty * 100) / 100,
-              isCoperto: isCop,
-              vatRate: Number(it.vatRate) || 10,
-            };
-          });
-
-        let copertoTotal = Number(parsedJson.copertoTotal) || 0;
-        if (copertoTotal === 0) {
-          copertoTotal = items
-            .filter((it) => it.isCoperto)
-            .reduce((sum, it) => sum + it.totalPrice, 0);
-        }
-
-        const calculatedTotal = items.reduce((sum, it) => sum + it.totalPrice, 0);
-        let finalTotal = Number(parsedJson.total) || calculatedTotal;
-        if (finalTotal === 0) {
-          finalTotal = calculatedTotal;
-        }
-
-        if (items.length === 0 && finalTotal > 0) {
-          const fallbackName =
-            parsedJson.restaurantName && parsedJson.restaurantName !== 'Ristorante'
-              ? `Conto ${parsedJson.restaurantName}`
-              : 'Conto Ristorante';
-          items.push({
-            name: fallbackName,
-            quantity: 1,
-            unitPrice: finalTotal,
-            totalPrice: finalTotal,
-            isCoperto: false,
-            vatRate: 10,
-          });
-        }
-
-        if (items.length === 0 && finalTotal === 0) {
-          throw new Error(
-            'Nessuna voce o importo rilevato nello scontrino. Assicurati che lo scontrino sia ben visibile e leggibile.'
-          );
-        }
-
-        return {
-          result: {
-            restaurantName: String(parsedJson.restaurantName || 'Ristorante').trim(),
-            currency: String(parsedJson.currency || 'EUR').trim(),
-            items,
-            copertoTotal: Math.round(copertoTotal * 100) / 100,
-            subtotal: Number(parsedJson.subtotal) || Math.round((finalTotal / 1.1) * 100) / 100,
-            vatAmount:
-              Number(parsedJson.vatAmount) ||
-              Math.round((finalTotal - finalTotal / 1.1) * 100) / 100,
-            total: Math.round(finalTotal * 100) / 100,
-          },
-          usageMetadata,
-        };
       }
+
+      if (!candidateText) {
+        throw new Error('Risposta vuota da Gemini AI.');
+      }
+
+      let cleanedText = candidateText
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+
+      const firstBrace = cleanedText.indexOf('{');
+      const lastBrace = cleanedText.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        cleanedText = cleanedText.substring(firstBrace, lastBrace + 1);
+      }
+
+      const parsedJson = JSON.parse(cleanedText);
+      const rawItems: any[] = Array.isArray(parsedJson.items) ? parsedJson.items : [];
+      const items: GeminiParsedItem[] = rawItems
+        .filter((it) => it && (it.name || it.title))
+        .map((it) => {
+          const qty = Math.max(Number(it.quantity) || 1, 1);
+          const total = Math.max(Number(it.totalPrice) || Number(it.price) || 0, 0);
+          const unit =
+            Number(it.unitPrice) || (total > 0 ? Math.round((total / qty) * 100) / 100 : 0);
+          const isCop =
+            Boolean(it.isCoperto) ||
+            /coperto|servizio|pane|cover charge/i.test(String(it.name || ''));
+
+          return {
+            name: String(it.name || it.title || 'Voce').trim(),
+            quantity: qty,
+            unitPrice: unit,
+            totalPrice: total > 0 ? total : Math.round(unit * qty * 100) / 100,
+            isCoperto: isCop,
+            vatRate: Number(it.vatRate) || 10,
+          };
+        });
+
+      let copertoTotal = Number(parsedJson.copertoTotal) || 0;
+      if (copertoTotal === 0) {
+        copertoTotal = items
+          .filter((it) => it.isCoperto)
+          .reduce((sum, it) => sum + it.totalPrice, 0);
+      }
+
+      const calculatedTotal = items.reduce((sum, it) => sum + it.totalPrice, 0);
+      let finalTotal = Number(parsedJson.total) || calculatedTotal;
+      if (finalTotal === 0) {
+        finalTotal = calculatedTotal;
+      }
+
+      if (items.length === 0 && finalTotal > 0) {
+        const fallbackName =
+          parsedJson.restaurantName && parsedJson.restaurantName !== 'Ristorante'
+            ? `Conto ${parsedJson.restaurantName}`
+            : 'Conto Ristorante';
+        items.push({
+          name: fallbackName,
+          quantity: 1,
+          unitPrice: finalTotal,
+          totalPrice: finalTotal,
+          isCoperto: false,
+          vatRate: 10,
+        });
+      }
+
+      if (items.length === 0 && finalTotal === 0) {
+        throw new Error(
+          'Nessuna voce o importo rilevato nello scontrino. Assicurati che lo scontrino sia ben visibile e leggibile.'
+        );
+      }
+
+      return {
+        result: {
+          restaurantName: String(parsedJson.restaurantName || 'Ristorante').trim(),
+          currency: String(parsedJson.currency || 'EUR').trim(),
+          items,
+          copertoTotal: Math.round(copertoTotal * 100) / 100,
+          subtotal: Number(parsedJson.subtotal) || Math.round((finalTotal / 1.1) * 100) / 100,
+          vatAmount:
+            Number(parsedJson.vatAmount) ||
+            Math.round((finalTotal - finalTotal / 1.1) * 100) / 100,
+          total: Math.round(finalTotal * 100) / 100,
+        },
+        usageMetadata,
+      };
     }
 
     throw lastFetchError || new Error(`Modello ${cleanModel} non disponibile.`);
@@ -433,10 +344,9 @@ IMPORTANT EXTRACTION RULES:
     const targetLangName = LANGUAGE_NAMES[targetLang] || targetLang;
     const prompt = `Translate the following mobile app UI string into ${targetLangName}: "${trimmed}". Return ONLY the translation, without markdown, quotes, explanations, or notes. Preserve any placeholders like {name} or {amount} exactly.`;
 
-    const discovered = await this.discoverAvailableModels(apiKey);
     const candidateModels = this.cachedWorkingModel
-      ? [this.cachedWorkingModel, ...discovered.slice(0, 3)]
-      : discovered.slice(0, 3);
+      ? [this.cachedWorkingModel, ...this.cachedAvailableModels.slice(0, 2)]
+      : this.cachedAvailableModels.slice(0, 3);
 
     for (const model of candidateModels) {
       const cleanModel = model.replace(/^models\//, '').trim();
@@ -451,6 +361,7 @@ IMPORTANT EXTRACTION RULES:
             generationConfig: {
               temperature: 0.1,
               maxOutputTokens: 128,
+              thinkingConfig: { thinkingBudget: 0 },
             },
           }),
         });
