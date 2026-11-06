@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 import { LineItem } from '../../types/bill';
 import { ENV } from '../../config/env';
 
@@ -35,6 +36,27 @@ export class GeminiReceiptService {
       candidates.push(this.fastestProxyBaseUrl);
     }
 
+    // Dynamically detect Metro host LAN IP if connected over Wi-Fi
+    try {
+      const hostUri: string | undefined =
+        Constants.expoConfig?.hostUri ||
+        (Constants as any).manifest2?.extra?.expoClient?.hostUri ||
+        (Constants as any).manifest?.debuggerHost;
+      if (hostUri && typeof hostUri === 'string') {
+        const hostPart = hostUri.replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
+        if (
+          hostPart &&
+          hostPart !== 'localhost' &&
+          hostPart !== '127.0.0.1' &&
+          !hostPart.endsWith('.exp.direct') &&
+          !hostPart.endsWith('.ngrok-free.app') &&
+          !hostPart.endsWith('.ngrok.io')
+        ) {
+          candidates.push(`http://${hostPart}:3000`);
+        }
+      }
+    } catch {}
+
     if (ENV.LOCAL_DEV_IP) {
       candidates.push(`http://${ENV.LOCAL_DEV_IP}:3000`);
     }
@@ -42,6 +64,9 @@ export class GeminiReceiptService {
     if (ENV.AI_PROXY_URL && ENV.AI_PROXY_URL.trim().length > 0) {
       candidates.push(ENV.AI_PROXY_URL.trim().replace(/\/+$/, ''));
     }
+
+    // Always include current AWS Milan Spot fallback
+    candidates.push('http://15.160.52.56');
 
     if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.origin) {
       candidates.push(window.location.origin.replace(/\/+$/, ''));
