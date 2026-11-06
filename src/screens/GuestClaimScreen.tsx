@@ -66,12 +66,17 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
     syncWithSystemLanguage();
   }, [syncWithSystemLanguage]);
 
+  const [isInitialCloudChecked, setIsInitialCloudChecked] = useState<boolean>(false);
+
   // Living link synchronizer: fetch cloud snapshot on mount, subscribe to WebSocket updates, and poll heartbeat
   React.useEffect(() => {
     let isMounted = true;
 
-    const syncLiveBill = async () => {
-      if (!billId) return;
+    const syncLiveBill = async (markInitialDone = false) => {
+      if (!billId) {
+        if (markInitialDone && isMounted) setIsInitialCloudChecked(true);
+        return;
+      }
       try {
         const cloudBill = await BillSyncService.fetchBillFromCloud(billId);
         if (cloudBill && isMounted) {
@@ -79,22 +84,26 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
         }
       } catch (err) {
         console.warn('[GuestClaimScreen] Cloud sync failed:', err);
+      } finally {
+        if (markInitialDone && isMounted) {
+          setIsInitialCloudChecked(true);
+        }
       }
     };
 
-    // 1. Initial live pull from cloud
-    syncLiveBill();
+    // 1. Initial live pull from cloud (before any fallback bill is synthesized)
+    syncLiveBill(true);
 
-    // 2. Realtime WebSocket subscription
+    // 2. Realtime WebSocket & Postgres Changes subscription
     const unsubscribe = BillSyncService.subscribeToBillUpdates((updated) => {
       if (updated && updated.id === billId && isMounted) {
         upsertBill(updated);
       }
     });
 
-    // 3. Heartbeat polling every 2.5 seconds to guarantee living status across any number of guests
+    // 3. Heartbeat polling every 2.5 seconds to guarantee living status across ~10+ concurrent guests
     const interval = setInterval(() => {
-      syncLiveBill();
+      syncLiveBill(false);
     }, 2500);
 
     return () => {
@@ -104,9 +113,12 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
     };
   }, [billId, upsertBill]);
 
+  const existingBillInStore = billId ? bills.find((b) => b.id === billId) : null;
   const bill =
-    (billId ? bills.find((b) => b.id === billId) : null) ||
-    ensureBillExists(billId || (bills[0]?.id ? bills[0].id : `bill_${Date.now()}`));
+    existingBillInStore ||
+    (isInitialCloudChecked
+      ? ensureBillExists(billId || (bills[0]?.id ? bills[0].id : `bill_${Date.now()}`))
+      : null);
 
   const organizer =
     bill?.participants.find((p) => p.isOrganizer || p.id === 'user_me') ||
