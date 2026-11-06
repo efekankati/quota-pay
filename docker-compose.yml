@@ -1,0 +1,72 @@
+version: "3.9"
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. Quota Pay Unified Web & Gemini AI Proxy Server
+  # ---------------------------------------------------------------------------
+  app:
+    image: ghcr.io/efekankati/quota-pay:latest
+    container_name: quota-pay-app
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - AWS_REGION=${AWS_REGION:-eu-south-1}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL:-https://nnamvsnorjbsruwhkker.supabase.co}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - AI_MAX_BUDGET_USD=${AI_MAX_BUDGET_USD:-5.00}
+      - SPOT_HOURLY_RATE_USD=${SPOT_HOURLY_RATE_USD:-0.005}
+    expose:
+      - "3000"
+    networks:
+      - quota-net
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # ---------------------------------------------------------------------------
+  # 2. Caddy Automatic Let's Encrypt HTTPS Reverse Proxy (Ports 80 & 443)
+  # Eliminates the $16+/mo AWS Application Load Balancer cost
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    container_name: quota-pay-https
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    networks:
+      - quota-net
+
+  # ---------------------------------------------------------------------------
+  # 3. Watchtower Auto-Updater (Polls GHCR every 60s for new image digests)
+  # ---------------------------------------------------------------------------
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: quota-pay-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 60 --cleanup --label-enable
+    networks:
+      - quota-net
+
+networks:
+  quota-net:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

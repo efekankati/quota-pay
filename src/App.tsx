@@ -34,7 +34,7 @@ export default function App() {
   const handleRevealStart = useCallback(() => {
     Animated.timing(contentScale, {
       toValue: 1.0,
-      duration: 500,
+      duration: 800,
       easing: Easing.bezier(0.16, 1, 0.3, 1),
       useNativeDriver: Platform.OS !== 'web',
     }).start();

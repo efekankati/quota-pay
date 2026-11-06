@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#0A0D14"
+      "backgroundColor": "#0A0B0E"
     },
     "ios": {
       "supportsTablet": false,
@@ -35,7 +35,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#0A0D14"
+        "backgroundColor": "#0A0B0E"
       },
       "package": "eu.quota.app",
       "permissions": [
