@@ -21,11 +21,19 @@ TERRAFORM_DIR = Path(__file__).resolve().parent.parent / "terraform"
 def _build_tf_env(extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Constructs environment variables and TF_VAR_* mappings for subprocess execution."""
     env = os.environ.copy()
+    env.setdefault("AWS_PROFILE", "efekankati")
     env.setdefault("AWS_DEFAULT_REGION", "eu-south-1")
     env.setdefault("AWS_REGION", "eu-south-1")
 
+    # Strip any placeholder or empty static key variables so AWS_PROFILE=`efekankati` is always used
+    for key_var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        val = env.get(key_var, "")
+        if not val or "your_aws_" in val:
+            env.pop(key_var, None)
+
     # Map standard .env variables to Terraform TF_VAR_* inputs automatically
     mappings = {
+        "AWS_PROFILE": "TF_VAR_aws_profile",
         "GEMINI_API_KEY": "TF_VAR_gemini_api_key",
         "EXPO_PUBLIC_GEMINI_API_KEY": "TF_VAR_gemini_api_key",
         "SUPABASE_URL": "TF_VAR_supabase_url",
@@ -159,3 +167,4 @@ if __name__ == "__main__":
         emergency_destroy(reason_arg, dry_run=is_dry)
     else:
         print("Usage: python terraform_actuator.py [deploy|destroy] [reason] [--dry-run]")
+

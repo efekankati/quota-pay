@@ -24,10 +24,15 @@ if (Test-Path $EnvFile) {
     }
 }
 
-Write-Host "[Quota Pay] Tearing down AWS eu-south-1 Spot infrastructure ($Reason)..." -ForegroundColor Yellow
+if (-not $env:AWS_PROFILE) {
+    $env:AWS_PROFILE = "efekankati"
+}
+
+Write-Host "[Quota Pay] Tearing down AWS eu-south-1 Spot infrastructure ($Reason) [Profile: $($env:AWS_PROFILE)]..." -ForegroundColor Yellow
 if ($DryRun) {
     python (Join-Path $ScriptDir "terraform_actuator.py") destroy "$Reason" --dry-run
 } else {
     python (Join-Path $ScriptDir "terraform_actuator.py") destroy "$Reason"
 }
 Write-Host "[Quota Pay] Infrastructure destroyed. AWS compute spend is now `$0.00/hr." -ForegroundColor Green
+

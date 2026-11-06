@@ -7,3 +7,4 @@ output "instance_id" {
   description = "EC2 Spot Instance ID in eu-south-1"
   value       = aws_instance.quota_spot_server.id
 }
+
