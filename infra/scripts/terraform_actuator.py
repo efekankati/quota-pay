@@ -112,11 +112,32 @@ def deploy_spot_instance(dry_run: bool = False) -> Dict[str, Any]:
         except json.JSONDecodeError:
             outputs = {}
 
+    public_ip = outputs.get("server_public_ip")
+    if public_ip and not dry_run:
+        root_env_path = TERRAFORM_DIR.parent.parent / ".env"
+        if root_env_path.exists():
+            try:
+                env_lines = root_env_path.read_text(encoding="utf-8").splitlines()
+                updated_lines = []
+                found = False
+                for line in env_lines:
+                    if line.strip().startswith("EXPO_PUBLIC_AI_PROXY_URL="):
+                        updated_lines.append(f"EXPO_PUBLIC_AI_PROXY_URL=http://{public_ip}")
+                        found = True
+                    else:
+                        updated_lines.append(line)
+                if not found:
+                    updated_lines.append(f"EXPO_PUBLIC_AI_PROXY_URL=http://{public_ip}")
+                root_env_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+            except Exception as exc:
+                print(f"[TerraformActuator] Warning updating .env: {exc}")
+
     result = {
         "status": "deployed",
         "region": "eu-south-1",
         "timestamp": timestamp,
-        "server_public_ip": outputs.get("server_public_ip"),
+        "server_public_ip": public_ip,
+        "guest_share_origin": f"http://{public_ip}.sslip.io" if public_ip else None,
         "instance_id": outputs.get("instance_id"),
     }
     print(f"[TerraformActuator] Deployment complete: {json.dumps(result)}")
@@ -167,4 +188,3 @@ if __name__ == "__main__":
         emergency_destroy(reason_arg, dry_run=is_dry)
     else:
         print("Usage: python terraform_actuator.py [deploy|destroy] [reason] [--dry-run]")
-
