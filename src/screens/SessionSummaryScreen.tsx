@@ -232,7 +232,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
       <Header
         title={bill.restaurantName}
         subtitle={bill.title}
-        showBack
+        showBack={!isGuestBrowser}
         onBack={onBack}
       />
 
@@ -400,25 +400,27 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              onPress={() => onItemizeAgain(bill.id)}
-              style={[
-                styles.smallActionBtn,
-                {
-                  backgroundColor: colors.surfaceElevated,
-                  borderColor: colors.border,
-                },
-              ]}
-            >
-              <Text
-                style={[styles.smallActionText, { color: colors.textPrimary }]}
-                numberOfLines={1}
-                adjustsFontSizeToFit
-                minimumFontScale={0.75}
+            {!isGuestBrowser && (
+              <TouchableOpacity
+                onPress={() => onItemizeAgain(bill.id)}
+                style={[
+                  styles.smallActionBtn,
+                  {
+                    backgroundColor: colors.surfaceElevated,
+                    borderColor: colors.border,
+                  },
+                ]}
               >
-                {t('modifyItemShares')}
-              </Text>
-            </TouchableOpacity>
+                <Text
+                  style={[styles.smallActionText, { color: colors.textPrimary }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.75}
+                >
+                  {t('modifyItemShares')}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 

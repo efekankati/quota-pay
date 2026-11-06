@@ -190,6 +190,7 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
   }
 
   const currentDiner = bill.participants.find((p) => p.id === selectedGuestId);
+  const isCurrentDinerPaid = currentDiner?.status === 'paid';
 
   // Breakdown for current guest
   const shareBreakdown = selectedGuestId
@@ -452,9 +453,18 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
                 <Text style={[styles.activeDinerGreeting, { color: colors.textPrimary }]}>
                   {t('guestHello', { name: currentDiner?.name || 'Guest' })}
                 </Text>
-                <Text style={[styles.activeDinerPrompt, { color: colors.textSecondary }]}>
-                  {t('guestChoosePrompt')}
-                </Text>
+                {isCurrentDinerPaid ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                    <Lock size={12} color="#10B981" />
+                    <Text style={[styles.activeDinerPrompt, { color: '#10B981', fontWeight: '600' }]}>
+                      {t('paidAndSettledStatus')} • {t('guestOrganizerShareLocked')}
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={[styles.activeDinerPrompt, { color: colors.textSecondary }]}>
+                    {t('guestChoosePrompt')}
+                  </Text>
+                )}
               </View>
               <TouchableOpacity
                 onPress={() => {
@@ -806,6 +816,7 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
                           <TouchableOpacity
                             activeOpacity={0.7}
                             onPress={() => {
+                              if (isCurrentDinerPaid) return;
                               if (myQty > 0) {
                                 lightImpact();
                                 setItemClaimedQuantity(
@@ -816,13 +827,13 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
                                 );
                               }
                             }}
-                            disabled={myQty === 0}
+                            disabled={isCurrentDinerPaid || myQty === 0}
                             style={[
                               styles.stepperBtn,
                               {
                                 backgroundColor: colors.surfaceElevated,
                                 borderColor: colors.borderSubtle,
-                                opacity: myQty > 0 ? 1 : 0.4,
+                                opacity: !isCurrentDinerPaid && myQty > 0 ? 1 : 0.35,
                               },
                             ]}
                           >
@@ -852,6 +863,7 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
                           <TouchableOpacity
                             activeOpacity={0.7}
                             onPress={() => {
+                              if (isCurrentDinerPaid) return;
                               if (availableForMe > myQty) {
                                 lightImpact();
                                 setItemClaimedQuantity(
@@ -862,13 +874,13 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
                                 );
                               }
                             }}
-                            disabled={myQty >= availableForMe}
+                            disabled={isCurrentDinerPaid || myQty >= availableForMe}
                             style={[
                               styles.stepperBtn,
                               {
                                 backgroundColor: colors.surfaceElevated,
                                 borderColor: colors.borderSubtle,
-                                opacity: availableForMe > myQty ? 1 : 0.4,
+                                opacity: !isCurrentDinerPaid && availableForMe > myQty ? 1 : 0.35,
                               },
                             ]}
                           >
@@ -888,9 +900,9 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
                         return (
                           <TouchableOpacity
                             activeOpacity={0.8}
-                            disabled={isTakenByOther}
+                            disabled={isCurrentDinerPaid || isTakenByOther}
                             onPress={() => {
-                              if (isTakenByOther) return;
+                              if (isCurrentDinerPaid || isTakenByOther) return;
                               lightImpact();
                               toggleItemAssignment(bill.id, item.id, currentDiner.id);
                             }}
@@ -901,13 +913,17 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
                                   ? colors.accent
                                   : colors.surfaceElevated,
                                 borderColor: isClaimedByMe ? colors.accent : colors.border,
-                                opacity: isTakenByOther ? 0.6 : 1,
+                                opacity: isCurrentDinerPaid || isTakenByOther ? 0.65 : 1,
                               },
                             ]}
                           >
                             {isClaimedByMe ? (
                               <>
-                                <Check size={14} color="#000000" strokeWidth={3} />
+                                {isCurrentDinerPaid ? (
+                                  <Lock size={13} color="#000000" strokeWidth={2.5} />
+                                ) : (
+                                  <Check size={14} color="#000000" strokeWidth={3} />
+                                )}
                                 <Text style={styles.singleSelectBtnTextActive}>{t('claimedBadge')}</Text>
                               </>
                             ) : isTakenByOther ? (

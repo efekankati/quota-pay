@@ -79,6 +79,12 @@ class BillSyncServiceImpl {
 
     // 3. Merge Line Items & Participant Claims
     const localParticipantIds = new Set((localBill.participants || []).map((p) => p.id));
+    // Paid guests in cloudBill have locked, immutable item claims
+    const paidCloudGuestIds = new Set(
+      (cloudBill.participants || [])
+        .filter((p) => !p.isOrganizer && p.id !== 'user_me' && p.status === 'paid')
+        .map((p) => p.id)
+    );
     const baseItems =
       localBill.items && localBill.items.length > 0
         ? localBill.items
@@ -101,18 +107,19 @@ class BillSyncServiceImpl {
       if (!cloudItem) return localItem;
 
       // Start with local claimedQuantities, then retain cloud claims from guests that weren't in localBill yet
+      // or guests who have already paid in cloudBill (locked claims)
       const mergedClaimed: Record<string, number> = {
         ...(localItem.claimedQuantities || {}),
       };
       for (const [pId, qty] of Object.entries(cloudItem.claimedQuantities || {})) {
-        if (!localParticipantIds.has(pId) && qty > 0) {
+        if ((!localParticipantIds.has(pId) || paidCloudGuestIds.has(pId)) && qty > 0) {
           mergedClaimed[pId] = qty;
         }
       }
 
       const assignedSet = new Set<string>(localItem.assignedParticipantIds || []);
       for (const pId of cloudItem.assignedParticipantIds || []) {
-        if (!localParticipantIds.has(pId)) {
+        if (!localParticipantIds.has(pId) || paidCloudGuestIds.has(pId)) {
           assignedSet.add(pId);
         }
       }

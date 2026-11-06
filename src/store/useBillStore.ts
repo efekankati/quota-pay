@@ -841,6 +841,17 @@ export const useBillStore = create<BillStoreState>()(
       const bills = state.bills.map((bill) => {
         if (bill.id !== billId) return bill;
 
+        // Paid guests have completed their session and cannot edit item shares
+        const targetParticipant = bill.participants.find((p) => p.id === participantId);
+        const isGuestParticipant =
+          targetParticipant &&
+          !targetParticipant.isOrganizer &&
+          targetParticipant.id !== bill.organizerId &&
+          targetParticipant.id !== 'user_me';
+        if (isGuestParticipant && targetParticipant.status === 'paid') {
+          return bill;
+        }
+
         const updatedItems = bill.items.map((item) => {
           if (item.id !== itemId) return item;
 
@@ -881,6 +892,17 @@ export const useBillStore = create<BillStoreState>()(
     set((state) => {
       const bills = state.bills.map((bill) => {
         if (bill.id !== billId) return bill;
+
+        // Paid guests have completed their session and cannot edit item shares
+        const targetParticipant = bill.participants.find((p) => p.id === participantId);
+        const isGuestParticipant =
+          targetParticipant &&
+          !targetParticipant.isOrganizer &&
+          targetParticipant.id !== bill.organizerId &&
+          targetParticipant.id !== 'user_me';
+        if (isGuestParticipant && targetParticipant.status === 'paid') {
+          return bill;
+        }
 
         const updatedItems = bill.items.map((item) => {
           if (item.id !== itemId) return item;
