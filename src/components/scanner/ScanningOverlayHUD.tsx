@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { CheckCircle2, Sparkles, X } from 'lucide-react-native';
 import { useLanguageStore } from '../../store/useLanguageStore';
+import { useThemeStore } from '../../store/useThemeStore';
 import { RADIUS, SPACING } from '../../config/theme';
 import { useHaptics } from '../../hooks/useHaptics';
 
@@ -47,7 +48,7 @@ const STEPS: StepItem[] = [
  */
 const StepArcSpinner: React.FC<{ size?: number; color?: string }> = ({
   size = 18,
-  color = '#A855F7',
+  color = '#00D589',
 }) => {
   const spinAnim = useRef(new Animated.Value(0)).current;
 
@@ -96,6 +97,7 @@ export const ScanningOverlayHUD: React.FC<ScanningOverlayHUDProps> = ({
   onCancel,
 }) => {
   const { t } = useLanguageStore();
+  const { colors } = useThemeStore();
   const { lightImpact, successNotification } = useHaptics();
 
   // Stable ref for haptics so effects never re-run due to function recreation
@@ -303,8 +305,8 @@ export const ScanningOverlayHUD: React.FC<ScanningOverlayHUDProps> = ({
         >
           {/* Neon inner icon */}
           <View style={styles.badgeInnerIconBox}>
-            <Text style={styles.brandLettermark}>Q</Text>
-            <Sparkles size={14} color="#E9D5FF" style={styles.badgeSparkle} />
+            <Text style={[styles.brandLettermark, { color: colors.accent }]}>Q</Text>
+            <Sparkles size={14} color={colors.accent} style={styles.badgeSparkle} />
           </View>
         </Animated.View>
       </View>
@@ -312,7 +314,7 @@ export const ScanningOverlayHUD: React.FC<ScanningOverlayHUDProps> = ({
       {/* Neo-Fintech Progress Bar & Percentage */}
       <View style={styles.progressBarWrapper}>
         <View style={styles.progressBarHeader}>
-          <Text style={styles.progressBarStageText} numberOfLines={1}>
+          <Text style={[styles.progressBarStageText, { color: colors.accent }]} numberOfLines={1}>
             {currentStep >= 6
               ? t('analysisCompletedStage')
               : t('stageProgress', {
@@ -331,7 +333,7 @@ export const ScanningOverlayHUD: React.FC<ScanningOverlayHUDProps> = ({
               styles.progressFill,
               {
                 width: progressWidthInterpolate,
-                backgroundColor: currentStep >= 6 ? '#10B981' : '#A855F7',
+                backgroundColor: colors.accent,
               },
             ]}
           />
@@ -351,10 +353,10 @@ export const ScanningOverlayHUD: React.FC<ScanningOverlayHUDProps> = ({
               <View style={styles.stepIconBox}>
                 {isFinished ? (
                   <View style={styles.completedCheckCircle}>
-                    <CheckCircle2 size={20} color="#10B981" />
+                    <CheckCircle2 size={20} color={colors.accent} />
                   </View>
                 ) : isActive ? (
-                  <StepArcSpinner size={18} color="#C084FC" />
+                  <StepArcSpinner size={18} color={colors.accent} />
                 ) : (
                   <View style={styles.pendingCircle} />
                 )}
@@ -365,7 +367,7 @@ export const ScanningOverlayHUD: React.FC<ScanningOverlayHUDProps> = ({
                 style={[
                   styles.stepLabel,
                   isFinished && styles.stepLabelCompleted,
-                  isActive && styles.stepLabelActive,
+                  isActive && [styles.stepLabelActive, { color: colors.accent }],
                   isPending && styles.stepLabelPending,
                 ]}
                 numberOfLines={1}
@@ -394,7 +396,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: '#090714',
+    backgroundColor: '#090B0E',
     zIndex: 9999,
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -437,26 +439,26 @@ const styles = StyleSheet.create({
     width: 130,
     height: 130,
     borderRadius: 65,
-    backgroundColor: 'rgba(124, 58, 237, 0.35)',
-    shadowColor: '#8B5CF6',
+    backgroundColor: 'rgba(0, 213, 137, 0.2)',
+    shadowColor: '#00D589',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.95,
-    shadowRadius: 40,
+    shadowOpacity: 0.8,
+    shadowRadius: 36,
     elevation: 15,
   },
   squircleBadge: {
     width: 76,
     height: 76,
     borderRadius: 22,
-    backgroundColor: '#2E1065',
+    backgroundColor: '#131822',
     borderWidth: 1.5,
-    borderColor: 'rgba(192, 132, 252, 0.5)',
+    borderColor: 'rgba(0, 213, 137, 0.4)',
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#A855F7',
+    shadowColor: '#00D589',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 20,
+    shadowOpacity: 0.7,
+    shadowRadius: 18,
     elevation: 12,
   },
   badgeInnerIconBox: {
@@ -466,8 +468,8 @@ const styles = StyleSheet.create({
   brandLettermark: {
     fontSize: 38,
     fontWeight: '900',
-    color: '#C084FC',
-    textShadowColor: '#A855F7',
+    color: '#00D589',
+    textShadowColor: 'rgba(0, 213, 137, 0.5)',
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 12,
     letterSpacing: -1,
@@ -493,7 +495,7 @@ const styles = StyleSheet.create({
   progressBarStageText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#A78BFA',
+    color: '#00D589',
     letterSpacing: 0.8,
   },
   progressBarPercentText: {
@@ -556,7 +558,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   stepLabelActive: {
-    color: '#E9D5FF',
+    color: '#00D589',
     fontWeight: '700',
   },
   stepLabelPending: {
