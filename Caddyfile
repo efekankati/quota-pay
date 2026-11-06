@@ -1,0 +1,21 @@
+# =============================================================================
+# Quota Pay — Caddy Automatic HTTPS & Reverse Proxy Configuration
+# Terminates SSL/TLS automatically via Let's Encrypt on ports 80/443 (Zero AWS ALB cost)
+# =============================================================================
+{$DOMAIN_NAME::80} {
+  encode zstd gzip
+
+  # Reverse proxy both static web app and /api/ai/* endpoints to the Node.js container
+  reverse_proxy app:3000 {
+    header_up Host {host}
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+  }
+
+  header {
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "SAMEORIGIN"
+    Referrer-Policy "strict-origin-when-cross-origin"
+  }
+}
