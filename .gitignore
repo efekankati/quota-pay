@@ -32,6 +32,8 @@ android/build/
 **/.terraform/*
 *.tfstate
 *.tfstate.*
+*.tfvars
+*.tfvars.json
 crash.log
 cost_guard.log
 __pycache__/

@@ -17,9 +17,11 @@ if [ -f "${ROOT_DIR}/.env" ]; then
   set +a
 fi
 
-echo "🚀 [Quota Pay] Deploying AWS eu-south-1 (Milan) EC2 Spot Instance..."
+export AWS_PROFILE="${AWS_PROFILE:-efekankati}"
+echo "🚀 [Quota Pay] Deploying AWS eu-south-1 (Milan) EC2 Spot Instance (Profile: ${AWS_PROFILE})..."
 python3 "${SCRIPT_DIR}/terraform_actuator.py" deploy "$@"
 
 echo "🛡️ [Quota Pay] Starting FinOps CostGuard background monitor..."
 nohup python3 "${SCRIPT_DIR}/cost_guard.py" "$@" > "${ROOT_DIR}/cost_guard.log" 2>&1 &
 echo "✅ CostGuard active (PID: $!, logs: ${ROOT_DIR}/cost_guard.log)"
+

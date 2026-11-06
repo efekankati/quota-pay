@@ -21,11 +21,19 @@ TERRAFORM_DIR = Path(__file__).resolve().parent.parent / "terraform"
 def _build_tf_env(extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Constructs environment variables and TF_VAR_* mappings for subprocess execution."""
     env = os.environ.copy()
+    env.setdefault("AWS_PROFILE", "efekankati")
     env.setdefault("AWS_DEFAULT_REGION", "eu-south-1")
     env.setdefault("AWS_REGION", "eu-south-1")
 
+    # Strip any placeholder or empty static key variables so AWS_PROFILE=`efekankati` is always used
+    for key_var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        val = env.get(key_var, "")
+        if not val or "your_aws_" in val:
+            env.pop(key_var, None)
+
     # Map standard .env variables to Terraform TF_VAR_* inputs automatically
     mappings = {
+        "AWS_PROFILE": "TF_VAR_aws_profile",
         "GEMINI_API_KEY": "TF_VAR_gemini_api_key",
         "EXPO_PUBLIC_GEMINI_API_KEY": "TF_VAR_gemini_api_key",
         "SUPABASE_URL": "TF_VAR_supabase_url",
@@ -104,11 +112,32 @@ def deploy_spot_instance(dry_run: bool = False) -> Dict[str, Any]:
         except json.JSONDecodeError:
             outputs = {}
 
+    public_ip = outputs.get("server_public_ip")
+    if public_ip and not dry_run:
+        root_env_path = TERRAFORM_DIR.parent.parent / ".env"
+        if root_env_path.exists():
+            try:
+                env_lines = root_env_path.read_text(encoding="utf-8").splitlines()
+                updated_lines = []
+                found = False
+                for line in env_lines:
+                    if line.strip().startswith("EXPO_PUBLIC_AI_PROXY_URL="):
+                        updated_lines.append(f"EXPO_PUBLIC_AI_PROXY_URL=http://{public_ip}")
+                        found = True
+                    else:
+                        updated_lines.append(line)
+                if not found:
+                    updated_lines.append(f"EXPO_PUBLIC_AI_PROXY_URL=http://{public_ip}")
+                root_env_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+            except Exception as exc:
+                print(f"[TerraformActuator] Warning updating .env: {exc}")
+
     result = {
         "status": "deployed",
         "region": "eu-south-1",
         "timestamp": timestamp,
-        "server_public_ip": outputs.get("server_public_ip"),
+        "server_public_ip": public_ip,
+        "guest_share_origin": f"http://{public_ip}.sslip.io" if public_ip else None,
         "instance_id": outputs.get("instance_id"),
     }
     print(f"[TerraformActuator] Deployment complete: {json.dumps(result)}")

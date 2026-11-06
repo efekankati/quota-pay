@@ -1224,14 +1224,15 @@ export const useBillStore = create<BillStoreState>()(
       const existingIndex = state.bills.findIndex((b) => b.id === incomingBill.id);
       if (existingIndex !== -1) {
         const existing = state.bills[existingIndex];
+        let mergedBill = BillSyncService.mergeBillSessions(existing, incomingBill);
+
         const hasLocalItems = Array.isArray(existing.items) && existing.items.length > 0;
         const hasIncomingItems = Array.isArray(incomingBill.items) && incomingBill.items.length > 0;
 
-        let mergedBill = incomingBill;
         // Never wipe local items if incoming cloud bill has empty items
         if (hasLocalItems && !hasIncomingItems) {
           mergedBill = {
-            ...incomingBill,
+            ...mergedBill,
             items: existing.items,
             taxSummary: existing.taxSummary?.grandTotal ? existing.taxSummary : incomingBill.taxSummary,
             copertoPerPerson: existing.copertoPerPerson || incomingBill.copertoPerPerson,
