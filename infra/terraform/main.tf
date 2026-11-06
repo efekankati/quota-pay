@@ -143,6 +143,7 @@ resource "aws_instance" "quota_spot_server" {
   subnet_id                   = aws_subnet.quota_public_subnet.id
   vpc_security_group_ids      = [aws_security_group.quota_sg.id]
   associate_public_ip_address = true
+  user_data_replace_on_change = true
 
   instance_market_options {
     market_type = "spot"

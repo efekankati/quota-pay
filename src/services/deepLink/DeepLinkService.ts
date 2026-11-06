@@ -358,6 +358,22 @@ export class DeepLinkService {
    * same Wi-Fi resolve it directly to the PC.
    */
   public static getLanDevOrigin(): string {
+    // 1. If a public AWS / cloud proxy server is configured (EXPO_PUBLIC_AI_PROXY_URL),
+    // route shared guest links directly to the AWS server (converting raw IPv4 to .sslip.io
+    // so WhatsApp, Telegram, and SMS recognize the link as a clickable domain on any 5G/Wi-Fi network).
+    if (ENV.AI_PROXY_URL && ENV.AI_PROXY_URL.trim().length > 0) {
+      try {
+        const parsedCloud = new URL(ENV.AI_PROXY_URL.trim());
+        const host = parsedCloud.hostname;
+        const isRawIpv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+        const clickableHost = isRawIpv4 ? `${host}.sslip.io` : host;
+        const portSuffix = parsedCloud.port ? `:${parsedCloud.port}` : '';
+        return `${parsedCloud.protocol}//${clickableHost}${portSuffix}`;
+      } catch {
+        // fallback below
+      }
+    }
+
     const lanDomainHost = ENV.LOCAL_DEV_HOST || 'desktop-v1197o1.fritz.box';
     const lanIp = ENV.LOCAL_DEV_IP || '192.168.178.114';
     const defaultPort = ENV.LOCAL_DEV_PORT || '8081';

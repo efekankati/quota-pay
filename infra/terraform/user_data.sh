@@ -7,13 +7,12 @@ set -euxo pipefail
 # writes runtime .env, and launches the Quota Pay + Caddy HTTPS + Watchtower stack.
 # =============================================================================
 
-dnf update -y
-dnf install -y docker git curl
+dnf install -y docker git
 
 systemctl enable docker
 systemctl start docker
 
-# Install Docker Compose v2 plugin
+# Install Docker Compose v2 plugin (curl-minimal is pre-installed on AL2023)
 mkdir -p /usr/local/lib/docker/cli-plugins
 curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
   -o /usr/local/lib/docker/cli-plugins/docker-compose
