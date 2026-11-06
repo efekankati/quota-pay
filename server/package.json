@@ -1,0 +1,19 @@
+{
+  "name": "quota-pay-server",
+  "version": "1.0.0",
+  "description": "Production Node.js/TypeScript backend & Gemini AI Proxy with Supabase Token Ledger for Quota Pay",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsc -p tsconfig.json && node dist/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.99.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "~5.9.2"
+  }
+}
