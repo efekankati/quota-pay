@@ -1,11 +1,22 @@
-# Quota — Publication-Grade Bill Splitting & Group Expense App
+# Quota — Neo-Fintech Bill Splitting & Group Expense Platform
 
-> **Targeted for Italy and the broader European Union (iOS & Android).**
-> Built with Expo SDK 52 (React Native New Architecture), Zustand, Stripe Connect, Apple Pay / Google Pay, Satispay, and an Italian Fiscal Receipt Heuristic OCR Engine.
+> **Tailored for Italy and the European Union (iOS, Android, & Web).**
+> Powered by **Google Gemini Multimodal AI Vision**, **Supabase Realtime WebSockets**, **Stripe Connect & Direct SEPA Instant**, **Apple Pay / Google Pay / Satispay**, and a cross-platform Neo-Fintech design system.
 
 ---
 
-## 1. System Architecture & Tech Stack
+## 🚀 Key Highlights & Architectural Overview
+
+- **🤖 Multimodal AI Vision Receipt Analysis (`GeminiReceiptService.ts`)**: Direct multimodal parsing of receipts, bar tabs, and POS slips. Intelligently isolates line items, individual prices, Italian cover charges (*coperto*), subtotals, and VAT rates without error-prone manual entry.
+- **⚡ Real-Time Cloud Synchronization (`BillSyncService.ts`)**: Powered by Supabase WebSockets. Organizers and dining guests see item claims, status changes, and settlements sync instantaneously across mobile devices and web browsers.
+- **📱 Zero-Friction Web Guest Claim (`GuestClaimScreen.tsx`)**: Dining companions do not need to install an app or create an account. Guests simply scan the table QR code or open a deep link to claim their items and pay directly.
+- **💳 Direct-to-Organizer Settlements**: Guests pay their exact share directly to the organizer's IBAN via **Apple Pay**, **Google Pay**, or **SEPA Instant**, avoiding custodial wallet lock-ins.
+- **🌍 European Multilingual Localization**: Automatic system-locale detection supporting **Italian, English, Turkish, Spanish, German, and French**.
+- **🎨 Emerald Neo-Fintech UI**: Obsidian dark design system (`#090B0E`) with electric emerald accents (`#00D589`), tactile micro-haptics, and responsive layout across phones, tablets, and web.
+
+---
+
+## 1. System Architecture & Directory Layout
 
 ```
 quota/
