@@ -26,7 +26,11 @@ if (Test-Path $EnvFile) {
 
 $DryFlag = if ($DryRun) { "--dry-run" } else { "" }
 
-Write-Host "[Quota Pay] Deploying AWS eu-south-1 (Milan) EC2 Spot Instance..." -ForegroundColor Green
+if (-not $env:AWS_PROFILE) {
+    $env:AWS_PROFILE = "efekankati"
+}
+
+Write-Host "[Quota Pay] Deploying AWS eu-south-1 (Milan) EC2 Spot Instance (Profile: $($env:AWS_PROFILE))..." -ForegroundColor Green
 if ($DryRun) {
     python (Join-Path $ScriptDir "terraform_actuator.py") deploy --dry-run
     python (Join-Path $ScriptDir "cost_guard.py") --once --dry-run
@@ -35,3 +39,4 @@ if ($DryRun) {
     Start-Process -NoNewWindow -FilePath "python" -ArgumentList (Join-Path $ScriptDir "cost_guard.py")
     Write-Host "[Quota Pay] FinOps CostGuard background monitor started." -ForegroundColor Cyan
 }
+

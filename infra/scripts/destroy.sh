@@ -16,7 +16,9 @@ if [ -f "${ROOT_DIR}/.env" ]; then
   set +a
 fi
 
+export AWS_PROFILE="${AWS_PROFILE:-efekankati}"
 REASON="${1:-Manual operator destroy}"
-echo "🛑 [Quota Pay] Tearing down AWS eu-south-1 Spot infrastructure (${REASON})..."
+echo "🛑 [Quota Pay] Tearing down AWS eu-south-1 Spot infrastructure (${REASON}) [Profile: ${AWS_PROFILE}]..."
 python3 "${SCRIPT_DIR}/terraform_actuator.py" destroy "${REASON}"
 echo "✅ [Quota Pay] Infrastructure destroyed. AWS compute spend is now $0.00/hr."
+

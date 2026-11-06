@@ -113,3 +113,4 @@ EOF
 
 docker compose pull || true
 docker compose up -d
+

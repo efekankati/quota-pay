@@ -4,6 +4,12 @@ variable "aws_region" {
   default     = "eu-south-1"
 }
 
+variable "aws_profile" {
+  description = "Local AWS CLI shared configuration/SSO profile name (authenticates without hardcoded access/secret keys)"
+  type        = string
+  default     = "efekankati"
+}
+
 variable "instance_type" {
   description = "EC2 Spot instance type (~$0.005/hr in eu-south-1)"
   type        = string
@@ -46,3 +52,4 @@ variable "ai_max_budget_usd" {
   type        = string
   default     = "5.00"
 }
+
