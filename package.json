@@ -1,0 +1,46 @@
+{
+  "name": "quota",
+  "version": "1.0.0",
+  "description": "Quota - Neo-Fintech Group Expense & Bill-Splitting App for Italy and the EU",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "test:ocr": "tsc scripts/testReceiptParser.ts --ignoreConfig --ignoreDeprecations 6.0 --outDir .dist_test --module commonjs --target es2020 --moduleResolution node --esModuleInterop && node .dist_test/scripts/testReceiptParser.js",
+    "i18n:sync": "tsc scripts/syncTranslations.ts --types node --ignoreConfig --ignoreDeprecations 6.0 --outDir .dist_test --module commonjs --target es2020 --moduleResolution node --esModuleInterop && node .dist_test/scripts/syncTranslations.js"
+  },
+  "dependencies": {
+    "@stripe/stripe-js": "^10.1.0",
+    "@supabase/supabase-js": "^2.118.0",
+    "expo": "~58.0.21",
+    "expo-asset": "~58.0.19",
+    "expo-blur": "~58.0.5",
+    "expo-brightness": "~58.0.2",
+    "expo-camera": "~58.0.14",
+    "expo-clipboard": "~58.0.4",
+    "expo-constants": "~58.0.14",
+    "expo-font": "~58.0.11",
+    "expo-haptics": "~58.0.7",
+    "expo-image-picker": "~58.0.10",
+    "expo-linear-gradient": "~58.0.3",
+    "expo-linking": "~58.0.15",
+    "expo-status-bar": "~58.0.4",
+    "lucide-react-native": "^0.474.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-native": "0.88.1",
+    "react-native-svg": "15.16.0",
+    "react-native-web": "^0.21.2",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@types/node": "^26.6.5",
+    "@types/react": "~19.3.0",
+    "typescript": "~6.0.3"
+  },
+  "private": true
+}

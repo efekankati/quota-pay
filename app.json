@@ -1,0 +1,87 @@
+{
+  "expo": {
+    "name": "Quota",
+    "slug": "quota",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0A0D14"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "eu.quota.app",
+      "merchantId": "merchant.eu.quota.pay",
+      "entitlements": {
+        "com.apple.developer.in-app-payments": [
+          "merchant.eu.quota.pay"
+        ]
+      },
+      "infoPlist": {
+        "NSCameraUsageDescription": "Quota ha bisogno di accedere alla fotocamera per scansionare lo scontrino e riconoscere gli importi.",
+        "NSPhotoLibraryUsageDescription": "Quota accede alle tue foto per consentirti di caricare scontrini salvati in galleria.",
+        "NSUserTrackingUsageDescription": "Quota utilizza questo identificatore per garantire l'affidabilità delle transazioni e prevenire le frodi nei pagamenti.",
+        "CFBundleAllowMixedLocalizations": true
+      },
+      "associatedDomains": [
+        "applinks:quota.eu",
+        "applinks:pay.quota.eu"
+      ]
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0A0D14"
+      },
+      "package": "eu.quota.app",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.INTERNET",
+        "android.permission.VIBRATE",
+        "com.google.android.gms.permission.AD_ID"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "quota.eu",
+              "pathPrefix": "/bill"
+            },
+            {
+              "scheme": "quota"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Consenti l'accesso alla fotocamera per scansionare scontrini ed estrarre i conti."
+        }
+      ],
+      "expo-asset",
+      "expo-font",
+      "expo-status-bar"
+    ],
+    "scheme": "quota"
+  }
+}

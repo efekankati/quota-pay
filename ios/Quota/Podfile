@@ -1,0 +1,27 @@
+platform :ios, '15.1'
+prepare_react_native_project!
+
+target 'Quota' do
+  use_expo_modules!
+  config = use_native_modules!
+
+  use_frameworks! :linkage => :static
+
+  # Stripe React Native with Apple Pay Merchant Capabilities
+  pod 'StripePaymentSheet', '~> 23.0'
+  pod 'StripeApplePay', '~> 23.0'
+
+  post_install do |installer|
+    react_native_post_install(
+      installer,
+      config[:reactNativePath],
+      :mac_catalyst_enabled => false
+    )
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |config|
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
+        config.build_settings['ENABLE_BITCODE'] = 'NO'
+      end
+    end
+  end
+end
