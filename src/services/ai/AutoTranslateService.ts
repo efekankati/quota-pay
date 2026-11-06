@@ -1,15 +1,6 @@
 import { SupportedLanguage } from '../../i18n/translations';
 import { GeminiReceiptService } from './GeminiReceiptService';
 
-const LANGUAGE_NAMES: Record<SupportedLanguage, string> = {
-  it: 'Italian',
-  tr: 'Turkish',
-  en: 'English',
-  es: 'Spanish',
-  de: 'German',
-  fr: 'French',
-};
-
 export class AutoTranslateService {
   // In-memory runtime translation cache: lang -> originalText -> translatedText
   private static cache: Record<string, Record<string, string>> = {
@@ -31,7 +22,7 @@ export class AutoTranslateService {
   }
 
   /**
-   * Translates a UI string dynamically into target language using Gemini AI
+   * Translates a UI string dynamically into target language via the backend AI proxy (`POST /api/ai/translate`)
    */
   public static async translate(
     text: string,
@@ -40,12 +31,10 @@ export class AutoTranslateService {
     const trimmed = text.trim();
     if (!trimmed) return text;
 
-    // Check memory cache
     if (this.cache[targetLang]?.[trimmed]) {
       return this.cache[targetLang][trimmed];
     }
 
-    // Dedup in-flight requests for same text + targetLang
     const requestKey = `${targetLang}:${trimmed}`;
     if (this.pendingRequests.has(requestKey)) {
       return this.pendingRequests.get(requestKey)!;
@@ -53,43 +42,40 @@ export class AutoTranslateService {
 
     const promise = (async () => {
       try {
-        const apiKey = GeminiReceiptService.getApiKey();
-        if (!apiKey) return text;
+        const baseUrls = GeminiReceiptService.getProxyCandidateBaseUrls();
 
-        const targetLangName = LANGUAGE_NAMES[targetLang] || targetLang;
-        const prompt = `Translate the following mobile app UI string into ${targetLangName}: "${trimmed}". Return ONLY the translation, without markdown, quotes, explanations, or notes. Preserve any placeholders like {name} or {amount} exactly.`;
+        for (const baseUrl of baseUrls) {
+          try {
+            const response = await fetch(`${baseUrl}/api/ai/translate`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                text: trimmed,
+                targetLang,
+              }),
+            });
 
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+            if (response.status === 429) {
+              console.warn('[AutoTranslateService] AI Quota Paused by Administrator (429)');
+              return text;
+            }
 
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [{ text: prompt }],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: 64,
-            },
-          }),
-        });
+            if (!response.ok) {
+              continue;
+            }
 
-        if (!response.ok) {
-          return text;
-        }
-
-        const data = await response.json();
-        const candidate = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (candidate && typeof candidate === 'string') {
-          const translated = candidate.trim().replace(/^["']|["']$/g, '');
-          if (!this.cache[targetLang]) {
-            this.cache[targetLang] = {};
+            const data = await response.json();
+            const translated = String(data?.translatedText || '').trim();
+            if (translated) {
+              if (!this.cache[targetLang]) {
+                this.cache[targetLang] = {};
+              }
+              this.cache[targetLang][trimmed] = translated;
+              return translated;
+            }
+          } catch {
+            // Try next candidate proxy URL
           }
-          this.cache[targetLang][trimmed] = translated;
-          return translated;
         }
 
         return text;
