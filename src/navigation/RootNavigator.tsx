@@ -400,13 +400,12 @@ export const RootNavigator: React.FC = () => {
                 return;
               }
               const currentBill = bills.find((b) => b.id === (targetBillId || activeBillId));
-              const isManualOrEven =
-                currentBill?.isManual ||
-                currentBill?.splitMode === 'even' ||
+              const isManualBill =
+                Boolean(currentBill?.isManual) ||
                 (!currentBill?.items || currentBill.items.length === 0);
 
               setHistory(['home']);
-              if (isManualOrEven) {
+              if (isManualBill) {
                 setCurrentScreen('manual_builder');
               } else {
                 setCurrentScreen('itemizer');

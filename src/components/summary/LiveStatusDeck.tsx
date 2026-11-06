@@ -39,7 +39,7 @@ export const LiveStatusDeck: React.FC<LiveStatusDeckProps> = ({
             participant.id === bill.organizerId;
           const isPaid = isOrg || participant.status === 'paid';
           const displayAmount = isOrg
-            ? (breakdown.totalDue > 0 ? breakdown.totalDue : (participant.paidAmount || 0))
+            ? (bill.isManual ? (breakdown.totalDue > 0 ? breakdown.totalDue : (participant.paidAmount || 0)) : breakdown.totalDue)
             : (participant.paidAmount || breakdown.totalDue);
 
           return (

@@ -76,7 +76,7 @@ export const QuotasScreen: React.FC<QuotasScreenProps> = ({
         const isOrg = Boolean(p.isOrganizer) || p.id === 'user_me' || p.id === bill.organizerId;
         if (isOrg || p.status === 'paid') {
           const due = getBillShareBreakdown(bill.id, p.id).totalDue;
-          return sum + (isOrg ? (due > 0 ? due : (p.paidAmount || 0)) : (p.paidAmount || due));
+          return sum + (isOrg ? (bill.isManual ? (due > 0 ? due : (p.paidAmount || 0)) : due) : (p.paidAmount || due));
         }
         return sum;
       }, 0);
@@ -103,7 +103,7 @@ export const QuotasScreen: React.FC<QuotasScreenProps> = ({
         const isOrg = Boolean(p.isOrganizer) || p.id === 'user_me' || p.id === bill.organizerId;
         if (isOrg || p.status === 'paid') {
           const due = getBillShareBreakdown(bill.id, p.id).totalDue;
-          return sum + (isOrg ? (due > 0 ? due : (p.paidAmount || 0)) : (p.paidAmount || due));
+          return sum + (isOrg ? (bill.isManual ? (due > 0 ? due : (p.paidAmount || 0)) : due) : (p.paidAmount || due));
         }
         return sum;
       }, 0);

@@ -118,7 +118,7 @@ export const ItemizerScreen: React.FC<ItemizerScreenProps> = ({
   });
 
   const remainingToCollectFromFriends = Math.max(
-    grandTotal - (organizerParticipant?.paidAmount || organizerBreakdown.totalDue) - friendsPaidTotal,
+    Math.round((grandTotal - organizerBreakdown.totalDue - friendsPaidTotal) * 100) / 100,
     0
   );
 
@@ -268,7 +268,7 @@ export const ItemizerScreen: React.FC<ItemizerScreenProps> = ({
             })}
           </Text>
         </View>
-      ) : isOrganizerSelected && grandTotal > 0 && bill.participants.length > 1 ? (
+      ) : isOrganizerSelected && grandTotal > 0 ? (
         <View
           style={[
             styles.organizerHintCard,
