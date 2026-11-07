@@ -41,24 +41,32 @@ export const RootNavigator: React.FC = () => {
   // Check if launched directly with a bill URL on web
   const initialUrlInfo = useMemo(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.href) {
-      const parsed = DeepLinkService.parseBillUrl(window.location.href);
-      if (parsed.lang) {
-        useLanguageStore.getState().setLanguage(parsed.lang);
-      } else if (parsed.isGuest || parsed.billId || parsed.claimId) {
-        useLanguageStore.getState().syncWithSystemLanguage();
-      }
-      if (parsed.billData) {
-        const existing = useBillStore
-          .getState()
-          .bills.find((b) => b.id === (parsed.billId || parsed.billData?.id));
-        if (!existing) {
-          useBillStore.getState().upsertBill(parsed.billData);
-        }
-      }
-      return parsed;
+      return DeepLinkService.parseBillUrl(window.location.href);
     }
     return null;
   }, []);
+
+  useEffect(() => {
+    if (!initialUrlInfo) return;
+    if (initialUrlInfo.lang) {
+      useLanguageStore.getState().setLanguage(initialUrlInfo.lang);
+    } else if (initialUrlInfo.isGuest || initialUrlInfo.billId || initialUrlInfo.claimId) {
+      useLanguageStore.getState().syncWithSystemLanguage();
+    }
+    if (initialUrlInfo.billData) {
+      const existing = useBillStore
+        .getState()
+        .bills.find((b) => b.id === (initialUrlInfo.billId || initialUrlInfo.billData?.id));
+      if (!existing) {
+        useBillStore.getState().upsertBill(initialUrlInfo.billData);
+      }
+    }
+  }, [initialUrlInfo]);
+
+  const savedGuestTabSession = useMemo(
+    () => DeepLinkService.getGuestTabSession(initialUrlInfo?.billId),
+    [initialUrlInfo?.billId]
+  );
 
   const [isGuestSession, setIsGuestSession] = useState<boolean>(() =>
     Boolean(initialUrlInfo?.isGuest || initialUrlInfo?.billId || initialUrlInfo?.claimId)
@@ -66,7 +74,17 @@ export const RootNavigator: React.FC = () => {
 
   const [currentScreen, setCurrentScreen] = useState<ScreenType>(() => {
     if (initialUrlInfo?.billId || initialUrlInfo?.claimId) {
-      if (initialUrlInfo.isGuest || initialUrlInfo.claimId) return 'guest_claim';
+      if (initialUrlInfo.isGuest || initialUrlInfo.claimId) {
+        const persistedScreen = savedGuestTabSession.screen;
+        if (
+          persistedScreen === 'summary' ||
+          persistedScreen === 'payment' ||
+          persistedScreen === 'guest_claim'
+        ) {
+          return persistedScreen;
+        }
+        return 'guest_claim';
+      }
       return 'itemizer';
     }
     return isAuthenticated ? 'home' : 'onboarding';
@@ -77,21 +95,15 @@ export const RootNavigator: React.FC = () => {
     initialUrlInfo?.billId || bills[0]?.id || ''
   );
   const [activeParticipantId, setActiveParticipantId] = useState<string>(
-    initialUrlInfo?.claimId || 'user_me'
+    initialUrlInfo?.claimId || savedGuestTabSession.participantId || 'user_me'
   );
 
-  // Fetch deep-linked living bill from Supabase cloud on mount or if not available locally
+  // Fetch deep-linked living bill from Supabase cloud on mount & subscribe with strict cleanup
   useEffect(() => {
     const targetBillId = initialUrlInfo?.billId || activeBillId;
     let isMounted = true;
 
     if (targetBillId) {
-      const existingLocally = useBillStore.getState().bills.find((b) => b.id === targetBillId);
-      // If we already have this bill locally with items, don't overwrite it with a fresh cloud fetch race
-      if (existingLocally && existingLocally.items && existingLocally.items.length > 0) {
-        return;
-      }
-
       BillSyncService.fetchBillFromCloud(targetBillId)
         .then((cloudBill) => {
           if (cloudBill && isMounted) {
@@ -113,8 +125,26 @@ export const RootNavigator: React.FC = () => {
         .catch(() => {});
     }
 
+    const unsubscribeRealtime = BillSyncService.subscribeToBillUpdates((cloudBill) => {
+      if (!isMounted || !cloudBill || !cloudBill.id) return;
+      const existing = useBillStore.getState().bills.find((b) => b.id === cloudBill.id);
+      if (!existing) {
+        useBillStore.getState().upsertBill(cloudBill);
+        return;
+      }
+      if (
+        existing.items &&
+        existing.items.length > 0 &&
+        (!cloudBill.items || cloudBill.items.length === 0)
+      ) {
+        return;
+      }
+      useBillStore.getState().upsertBill(cloudBill);
+    });
+
     return () => {
       isMounted = false;
+      unsubscribeRealtime();
     };
   }, [initialUrlInfo?.billId, initialUrlInfo?.claimId, activeBillId]);
 
@@ -380,8 +410,23 @@ export const RootNavigator: React.FC = () => {
           <SplitPaymentScreen
             billId={activeBillId}
             participantId={activeParticipantId}
-            onBack={goBack}
+            isGuest={isGuestSession}
+            onBack={() => {
+              if (isGuestSession) {
+                DeepLinkService.saveGuestTabSession(activeBillId, {
+                  participantId: activeParticipantId,
+                  screen: 'guest_claim',
+                });
+              }
+              goBack();
+            }}
             onPaymentSuccess={() => {
+              if (isGuestSession) {
+                DeepLinkService.saveGuestTabSession(activeBillId, {
+                  participantId: activeParticipantId,
+                  screen: 'summary',
+                });
+              }
               setHistory([isGuestSession ? 'guest_claim' : 'home']);
               setCurrentScreen('summary');
             }}
@@ -395,6 +440,9 @@ export const RootNavigator: React.FC = () => {
             onBack={goToHome}
             onItemizeAgain={(targetBillId) => {
               if (isGuestSession) {
+                DeepLinkService.saveGuestTabSession(targetBillId || activeBillId, {
+                  screen: 'guest_claim',
+                });
                 setHistory([]);
                 setCurrentScreen('guest_claim');
                 return;
@@ -422,7 +470,21 @@ export const RootNavigator: React.FC = () => {
               setActiveBillId(bId);
               setActiveParticipantId(pId);
               setActiveBill(bId);
+              DeepLinkService.saveGuestTabSession(bId, {
+                participantId: pId,
+                screen: 'payment',
+              });
               navigateTo('payment');
+            }}
+            onOpenSummary={(bId, pId) => {
+              setActiveBillId(bId);
+              if (pId) setActiveParticipantId(pId);
+              DeepLinkService.saveGuestTabSession(bId, {
+                ...(pId ? { participantId: pId } : {}),
+                screen: 'summary',
+              });
+              setHistory([]);
+              setCurrentScreen('summary');
             }}
             onBackToApp={
               Platform.OS !== 'web' && isAuthenticated

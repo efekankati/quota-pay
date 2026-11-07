@@ -30,6 +30,7 @@ import { useLanguageStore } from '../store/useLanguageStore';
 import { Header } from '../components/common/Header';
 import { Avatar } from '../components/common/Avatar';
 import { BillSyncService } from '../services/sync/BillSyncService';
+import { DeepLinkService } from '../services/deepLink/DeepLinkService';
 import { RADIUS, SHADOWS, SPACING, TYPOGRAPHY } from '../config/theme';
 import { useHaptics } from '../hooks/useHaptics';
 
@@ -37,6 +38,7 @@ interface GuestClaimScreenProps {
   billId: string;
   initialParticipantId?: string;
   onProceedToPayment: (billId: string, participantId: string) => void;
+  onOpenSummary?: (billId: string, participantId?: string) => void;
   onBackToApp?: () => void;
 }
 
@@ -46,6 +48,7 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
   billId,
   initialParticipantId,
   onProceedToPayment,
+  onOpenSummary,
   onBackToApp,
 }) => {
   const { colors } = useThemeStore();
@@ -101,29 +104,70 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
       }
     });
 
-    // 3. Heartbeat polling every 2.5 seconds to guarantee living status across ~10+ concurrent guests
+    // 3. Heartbeat polling every 2.5 seconds (pauses when tab is hidden in background to save memory & CPU)
     const interval = setInterval(() => {
+      if (
+        Platform.OS === 'web' &&
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      ) {
+        return;
+      }
       syncLiveBill(false);
     }, 2500);
+
+    const handleVisibilityChange = () => {
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'visible' &&
+        isMounted
+      ) {
+        syncLiveBill(false);
+      }
+    };
+
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
 
     return () => {
       isMounted = false;
       unsubscribe();
       clearInterval(interval);
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
     };
   }, [billId, upsertBill]);
+
+  const urlFallbackBill = useMemo(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.href) {
+      return DeepLinkService.parseBillUrl(window.location.href).billData || null;
+    }
+    return null;
+  }, []);
 
   const existingBillInStore = billId ? bills.find((b) => b.id === billId) : null;
   const bill =
     existingBillInStore ||
+    urlFallbackBill ||
     (isInitialCloudChecked
       ? ensureBillExists(billId || (bills[0]?.id ? bills[0].id : `bill_${Date.now()}`))
       : null);
 
   const organizer =
-    bill?.participants.find((p) => p.isOrganizer || p.id === 'user_me') ||
-    bill?.participants[0];
-  const organizerPaidAmount = organizer?.paidAmount || 0;
+    bill?.participants.find(
+      (p) => p.isOrganizer || p.id === 'user_me' || p.id === bill.organizerId
+    ) || bill?.participants[0];
+  const organizerBreakdown =
+    bill && organizer ? getBillShareBreakdown(bill.id, organizer.id) : null;
+  const organizerPaidAmount = bill
+    ? bill.isManual
+      ? Math.max(organizer?.paidAmount || 0, organizerBreakdown?.totalDue || 0)
+      : organizerBreakdown && organizerBreakdown.totalDue > 0
+      ? organizerBreakdown.totalDue
+      : organizer?.paidAmount || 0
+    : 0;
   const grandTotal = bill?.taxSummary?.grandTotal || 0;
 
   const totalPaidByFriends =
@@ -146,20 +190,83 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
     );
   }, [bill]);
 
-  // Current active guest participant ID
+  // Current active guest participant ID (persisted per browser tab in sessionStorage)
   const [selectedGuestId, setSelectedGuestId] = useState<string | null>(() => {
-    if (initialParticipantId && initialParticipantId !== organizer?.id) {
+    const saved = DeepLinkService.getGuestTabSession(billId);
+    const candidateId =
+      saved.participantId ||
+      (initialParticipantId &&
+      initialParticipantId !== 'user_me' &&
+      initialParticipantId !== organizer?.id
+        ? initialParticipantId
+        : null);
+    if (candidateId) {
       const match = bill?.participants.find(
-        (p) => p.id === initialParticipantId || p.splitId === initialParticipantId
+        (p) => p.id === candidateId || p.splitId === candidateId
       );
       if (match) return match.id;
-      return initialParticipantId;
+      return candidateId;
     }
     return null;
   });
 
+  // Automatically route paid guests straight to the Table Summary screen (Screenshot 1)
+  React.useEffect(() => {
+    if (!bill || !selectedGuestId || !onOpenSummary) return;
+    const diner = bill.participants.find(
+      (p) => p.id === selectedGuestId || p.splitId === selectedGuestId
+    );
+    if (diner && diner.status === 'paid') {
+      DeepLinkService.saveGuestTabSession(bill.id, {
+        participantId: diner.id,
+        screen: 'summary',
+      });
+      onOpenSummary(bill.id, diner.id);
+    }
+  }, [bill, selectedGuestId, onOpenSummary]);
+
   const [typedName, setTypedName] = useState('');
   const [activeFilter, setActiveFilter] = useState<GuestFilter>('all');
+
+  // Filter items (must be declared before any early return so hook order never changes between renders)
+  const filteredItems = useMemo(() => {
+    if (!bill) return [];
+    return bill.items.filter((item) => {
+      if (item.isCoperto) return false; // Coperto is handled as banner & auto-breakdown
+
+      const organizerQty =
+        item.claimedQuantities?.[organizer?.id || ''] ??
+        item.claimedQuantities?.[bill.organizerId || ''] ??
+        item.claimedQuantities?.['user_me'] ??
+        ((organizer && item.assignedParticipantIds.includes(organizer.id)) ||
+        (bill.organizerId && item.assignedParticipantIds.includes(bill.organizerId)) ||
+        item.assignedParticipantIds.includes('user_me')
+          ? 1
+          : 0);
+      const isOrganizerCoveredFull =
+        item.quantity === 1 ? organizerQty > 0 : organizerQty >= item.quantity;
+
+      const myQty = selectedGuestId
+        ? item.claimedQuantities?.[selectedGuestId] ??
+          (item.assignedParticipantIds.includes(selectedGuestId) ? 1 : 0)
+        : 0;
+
+      if (activeFilter === 'mine') {
+        return myQty > 0;
+      }
+      if (activeFilter === 'available') {
+        if (isOrganizerCoveredFull) return false;
+        let totalClaimed = 0;
+        if (item.claimedQuantities) {
+          Object.values(item.claimedQuantities).forEach((q) => (totalClaimed += q));
+        } else {
+          totalClaimed = item.assignedParticipantIds.length;
+        }
+        return totalClaimed < item.quantity || myQty > 0;
+      }
+      return true;
+    });
+  }, [bill, organizer, selectedGuestId, activeFilter]);
 
   if (!bill) {
     return (
@@ -209,6 +316,18 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
     );
     if (existing) {
       setSelectedGuestId(existing.id);
+      if (existing.status === 'paid' && onOpenSummary) {
+        DeepLinkService.saveGuestTabSession(bill.id, {
+          participantId: existing.id,
+          screen: 'summary',
+        });
+        onOpenSummary(bill.id, existing.id);
+      } else {
+        DeepLinkService.saveGuestTabSession(bill.id, {
+          participantId: existing.id,
+          screen: 'guest_claim',
+        });
+      }
       successNotification();
       return;
     }
@@ -218,6 +337,10 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
       isOrganizer: false,
     });
     setSelectedGuestId(newId);
+    DeepLinkService.saveGuestTabSession(bill.id, {
+      participantId: newId,
+      screen: 'guest_claim',
+    });
     successNotification();
   };
 
@@ -225,50 +348,29 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
   const handleSelectExistingParticipant = (participantId: string) => {
     lightImpact();
     setSelectedGuestId(participantId);
+    const chosen = bill.participants.find((p) => p.id === participantId);
+    if (chosen?.status === 'paid' && onOpenSummary) {
+      DeepLinkService.saveGuestTabSession(bill.id, {
+        participantId,
+        screen: 'summary',
+      });
+      onOpenSummary(bill.id, participantId);
+    } else {
+      DeepLinkService.saveGuestTabSession(bill.id, {
+        participantId,
+        screen: 'guest_claim',
+      });
+    }
     successNotification();
   };
 
-  // Filter items
-  const filteredItems = useMemo(() => {
-    return bill.items.filter((item) => {
-      if (item.isCoperto) return false; // Coperto is handled as banner & auto-breakdown
-
-      const organizerQty =
-        item.claimedQuantities?.[organizer?.id || ''] ??
-        (organizer && item.assignedParticipantIds.includes(organizer.id) ? 1 : 0);
-      const isOrganizerCoveredFull =
-        item.quantity === 1 ? organizerQty > 0 : organizerQty >= item.quantity;
-
-      const myQty = selectedGuestId
-        ? item.claimedQuantities?.[selectedGuestId] ??
-          (item.assignedParticipantIds.includes(selectedGuestId) ? 1 : 0)
-        : 0;
-
-      if (activeFilter === 'mine') {
-        return myQty > 0;
-      }
-      if (activeFilter === 'available') {
-        if (isOrganizerCoveredFull) return false;
-        let totalClaimed = 0;
-        if (item.claimedQuantities) {
-          Object.values(item.claimedQuantities).forEach((q) => (totalClaimed += q));
-        } else {
-          totalClaimed = item.assignedParticipantIds.length;
-        }
-        return totalClaimed < item.quantity || myQty > 0;
-      }
-      return true;
-    });
-  }, [bill.items, organizer, selectedGuestId, activeFilter]);
-
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Top Header - hide back button on initial page where user is requested to type their name */}
+      {/* Top Header - no back arrow on guest web page */}
       <Header
         title={bill.restaurantName}
         subtitle={t('guestClaimTitle')}
-        showBack={Boolean(selectedGuestId)}
-        onBack={() => setSelectedGuestId(null)}
+        showBack={false}
       />
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -469,6 +571,10 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
               <TouchableOpacity
                 onPress={() => {
                   lightImpact();
+                  DeepLinkService.saveGuestTabSession(bill.id, {
+                    participantId: null,
+                    screen: 'guest_claim',
+                  });
                   setSelectedGuestId(null);
                 }}
                 style={[
@@ -671,7 +777,13 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
                 // Organizer claims
                 const organizerQty =
                   item.claimedQuantities?.[organizer?.id || ''] ??
-                  (organizer && item.assignedParticipantIds.includes(organizer.id) ? 1 : 0);
+                  item.claimedQuantities?.[bill.organizerId || ''] ??
+                  item.claimedQuantities?.['user_me'] ??
+                  ((organizer && item.assignedParticipantIds.includes(organizer.id)) ||
+                  (bill.organizerId && item.assignedParticipantIds.includes(bill.organizerId)) ||
+                  item.assignedParticipantIds.includes('user_me')
+                    ? 1
+                    : 0);
                 const isOrganizerFullyClaimed =
                   item.quantity === 1 ? organizerQty > 0 : organizerQty >= item.quantity;
 

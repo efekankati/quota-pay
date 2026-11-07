@@ -29,6 +29,7 @@ import { showAppAlert } from '../store/useAlertStore';
 import { useHaptics } from '../hooks/useHaptics';
 import { GeminiReceiptService } from '../services/ai/GeminiReceiptService';
 import { SoundService } from '../services/audio/SoundService';
+import { base64ToBlobUrl, revokeBlobUrl } from '../utils/imageMemoryManager';
 import { RADIUS, SPACING, TYPOGRAPHY } from '../config/theme';
 
 interface ScannerScreenProps {
@@ -58,6 +59,16 @@ export const ScannerScreen: React.FC<ScannerScreenProps> = ({
   const [isAnalysisComplete, setIsAnalysisComplete] = useState(false);
   const [pendingBillId, setPendingBillId] = useState<string | null>(null);
   const activeBillIdRef = useRef<string>('');
+  const activeBlobUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (activeBlobUrlRef.current) {
+        revokeBlobUrl(activeBlobUrlRef.current);
+        activeBlobUrlRef.current = null;
+      }
+    };
+  }, []);
 
   const handleBack = () => {
     lightImpact();
@@ -146,12 +157,19 @@ export const ScannerScreen: React.FC<ScannerScreenProps> = ({
       setBillId(effectiveBillId);
       setPendingBillId(effectiveBillId);
 
+      // Convert raw image buffer/URI to lightweight Blob Object URL (never store base64 in global state)
+      if (activeBlobUrlRef.current) {
+        revokeBlobUrl(activeBlobUrlRef.current);
+      }
+      const managedBlobUrl = base64ToBlobUrl(photoUri || base64Image, 'image/jpeg');
+      activeBlobUrlRef.current = managedBlobUrl || null;
+
       // Populate items and active bill metadata
       setItems(effectiveBillId, lineItems, parsed.copertoTotal, parsed.total);
       updateBillMetadata(effectiveBillId, {
         restaurantName: parsed.restaurantName,
         title: `Bill: ${parsed.restaurantName}`,
-        receiptImageUrl: photoUri,
+        receiptImageUrl: managedBlobUrl || undefined,
       });
 
       // Signal completion to the progress steps overlay

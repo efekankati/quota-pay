@@ -150,6 +150,8 @@ export class GeminiReceiptService {
 
     for (const baseUrl of baseUrls) {
       const endpoint = `${baseUrl}/api/ai/parse-receipt`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 28000);
       try {
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -160,7 +162,9 @@ export class GeminiReceiptService {
             base64Data: cleanBase64,
             mimeType: detectedMime,
           }),
+          signal: controller.signal,
         });
+        clearTimeout(timeoutId);
 
         if (response.status === 429) {
           const payload = await response.json().catch(() => ({}));
@@ -184,6 +188,7 @@ export class GeminiReceiptService {
         this.fastestProxyBaseUrl = baseUrl;
         return parsed;
       } catch (err: any) {
+        clearTimeout(timeoutId);
         lastError = err;
         const msg = String(err?.message || err);
         if (msg.includes('AI Quota Paused by Administrator')) {

@@ -100,11 +100,15 @@ export const ScanningOverlayHUD: React.FC<ScanningOverlayHUDProps> = ({
   const { colors } = useThemeStore();
   const { lightImpact, successNotification } = useHaptics();
 
-  // Stable ref for haptics so effects never re-run due to function recreation
+  // Stable ref for haptics & callbacks so effects never re-run due to function recreation
   const hapticsRef = useRef({ lightImpact, successNotification });
+  const onFinishedRef = useRef(onFinishedAnimation);
+  const proceedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     hapticsRef.current = { lightImpact, successNotification };
-  }, [lightImpact, successNotification]);
+    onFinishedRef.current = onFinishedAnimation;
+  }, [lightImpact, successNotification, onFinishedAnimation]);
 
   // Active step index (0 to STEPS.length)
   // When currentStep = n: steps < n are completed, step n is active, steps > n are pending
@@ -128,8 +132,11 @@ export const ScanningOverlayHUD: React.FC<ScanningOverlayHUDProps> = ({
     });
     return () => {
       progressAnim.removeListener(listenerId);
+      progressAnim.stopAnimation();
+      pulseAnim.stopAnimation();
+      fadeAnim.stopAnimation();
     };
-  }, [progressAnim]);
+  }, [progressAnim, pulseAnim, fadeAnim]);
 
   // Logo pulse loop
   useEffect(() => {
@@ -249,17 +256,19 @@ export const ScanningOverlayHUD: React.FC<ScanningOverlayHUDProps> = ({
       }).start();
 
       // Brief 500ms pause of 100% satisfaction before proceeding to verification
-      const tProceed = setTimeout(() => {
-        if (onFinishedAnimation) {
-          onFinishedAnimation();
-        }
+      proceedTimerRef.current = setTimeout(() => {
+        onFinishedRef.current?.();
       }, 500);
-
-      return () => clearTimeout(tProceed);
     }, 320);
 
-    return () => clearTimeout(tFinish);
-  }, [isScanning, isComplete, onFinishedAnimation]);
+    return () => {
+      clearTimeout(tFinish);
+      if (proceedTimerRef.current) {
+        clearTimeout(proceedTimerRef.current);
+        proceedTimerRef.current = null;
+      }
+    };
+  }, [isScanning, isComplete]);
 
   if (!isScanning) return null;
 

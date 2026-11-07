@@ -37,6 +37,7 @@ cd /opt/quota-pay
 # Write runtime environment configuration
 cat <<'EOF' > /opt/quota-pay/.env
 NODE_ENV=production
+NODE_OPTIONS=--max-old-space-size=512
 PORT=3000
 AWS_REGION=eu-south-1
 DOMAIN_NAME=${domain_name}
@@ -67,7 +68,7 @@ if [ "$LOCAL" != "$REMOTE" ]; then
   git reset --hard origin/dev
   sed -i 's|ghcr.io/efekankati/quota-pay:latest|quota-pay-local:latest|g' /opt/quota-pay/docker-compose.yml
   DOCKER_BUILDKIT=0 docker build -t quota-pay-local:latest -f server/Dockerfile .
-  docker compose up -d --no-build --force-recreate app
+  docker compose up -d --no-build --force-recreate
 fi
 EOF
 chmod +x /usr/local/bin/quota-git-sync.sh

@@ -24,23 +24,34 @@ export default function App() {
 
   // Home dashboard spatial depth scale (0.96 -> 1.0 during reveal phase)
   const contentScale = useRef(new Animated.Value(isDirectGuestWebLink ? 1.0 : 0.96)).current;
+  const revealAnimRef = useRef<Animated.CompositeAnimation | null>(null);
 
   useEffect(() => {
     StripeService.initialize().catch((err) =>
       console.warn('[Stripe] Initialization notice:', err)
     );
-  }, []);
+    return () => {
+      revealAnimRef.current?.stop();
+      contentScale.stopAnimation();
+      contentScale.removeAllListeners();
+    };
+  }, [contentScale]);
 
   const handleRevealStart = useCallback(() => {
-    Animated.timing(contentScale, {
+    revealAnimRef.current?.stop();
+    const anim = Animated.timing(contentScale, {
       toValue: 1.0,
       duration: 800,
       easing: Easing.bezier(0.16, 1, 0.3, 1),
       useNativeDriver: Platform.OS !== 'web',
-    }).start();
+    });
+    revealAnimRef.current = anim;
+    anim.start();
   }, [contentScale]);
 
   const handleSplashFinish = useCallback(() => {
+    revealAnimRef.current?.stop();
+    contentScale.stopAnimation();
     contentScale.setValue(1.0);
     setIsSplashVisible(false);
   }, [contentScale]);

@@ -13,6 +13,7 @@ services:
     restart: unless-stopped
     environment:
       - NODE_ENV=production
+      - NODE_OPTIONS=--max-old-space-size=512
       - PORT=3000
       - AWS_REGION=${AWS_REGION:-eu-south-1}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
@@ -23,6 +24,13 @@ services:
       - SPOT_HOURLY_RATE_USD=${SPOT_HOURLY_RATE_USD:-0.005}
     expose:
       - "3000"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.50"
+          memory: 768M
+        reservations:
+          memory: 256M
     networks:
       - quota-net
     labels:
@@ -47,6 +55,13 @@ services:
       - caddy_config:/config
     depends_on:
       - app
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 768M
+        reservations:
+          memory: 256M
     networks:
       - quota-net
 
@@ -60,6 +75,13 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: --interval 60 --cleanup --label-enable
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 768M
+        reservations:
+          memory: 256M
     networks:
       - quota-net
 

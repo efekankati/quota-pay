@@ -95,7 +95,13 @@ export const CustomAlertModal: React.FC = () => {
         <TouchableOpacity
           style={StyleSheet.absoluteFill}
           activeOpacity={1}
-          onPress={hideAlert}
+          onPress={() => {
+            if (buttons.length === 1 && buttons[0]?.onPress) {
+              handleButtonPress(buttons[0]);
+            } else {
+              hideAlert();
+            }
+          }}
         />
 
         {/* Modal Card Content */}
