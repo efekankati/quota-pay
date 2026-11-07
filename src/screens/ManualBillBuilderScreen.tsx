@@ -51,6 +51,11 @@ import { showAppAlert } from '../store/useAlertStore';
 import { RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from '../config/theme';
 import { useHaptics } from '../hooks/useHaptics';
 import { LineItem, Participant } from '../types/bill';
+import {
+  base64ToBlobUrl,
+  revokeBlobUrl,
+  useReceiptBlobUrl,
+} from '../utils/imageMemoryManager';
 
 interface ManualBillBuilderScreenProps {
   billId: string;
@@ -120,6 +125,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
   // Guest Management State
   const [guestNameInput, setGuestNameInput] = useState('');
   const [editingGuest, setEditingGuest] = useState<{ id: string; name: string } | null>(null);
+  const receiptBlobUrl = useReceiptBlobUrl(bill?.receiptImageUrl);
 
   // Sync state if bill changes from store
   useEffect(() => {
@@ -286,7 +292,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
     successNotification();
   };
 
-  // Pick a photo of the bill from gallery
+  // Pick a photo of the bill from gallery (converted to Blob Object URL, never raw base64 in global state)
   const handlePickBillPhoto = async () => {
     lightImpact();
     try {
@@ -298,10 +304,11 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
       });
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
-        const imageUri = asset.base64
-          ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}`
-          : asset.uri;
-        updateBillMetadata(bill.id, { receiptImageUrl: imageUri });
+        const blobUrl = base64ToBlobUrl(
+          asset.uri || asset.base64 || '',
+          asset.mimeType || 'image/jpeg'
+        );
+        updateBillMetadata(bill.id, { receiptImageUrl: blobUrl });
         successNotification();
       }
     } catch (err: any) {
@@ -309,7 +316,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
     }
   };
 
-  // Take a photo of the bill with camera
+  // Take a photo of the bill with camera (converted to Blob Object URL)
   const handleTakeBillPhoto = async () => {
     lightImpact();
     try {
@@ -326,10 +333,11 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
       });
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
-        const imageUri = asset.base64
-          ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}`
-          : asset.uri;
-        updateBillMetadata(bill.id, { receiptImageUrl: imageUri });
+        const blobUrl = base64ToBlobUrl(
+          asset.uri || asset.base64 || '',
+          asset.mimeType || 'image/jpeg'
+        );
+        updateBillMetadata(bill.id, { receiptImageUrl: blobUrl });
         successNotification();
       }
     } catch {
@@ -337,9 +345,12 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
     }
   };
 
-  // Remove attached bill photo
+  // Remove attached bill photo and immediately revoke its Blob Object URL
   const handleRemoveBillPhoto = () => {
     lightImpact();
+    if (bill.receiptImageUrl) {
+      revokeBlobUrl(bill.receiptImageUrl);
+    }
     updateBillMetadata(bill.id, { receiptImageUrl: '' });
   };
 
@@ -596,7 +607,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
                   style={styles.billPhotoPreviewTouch}
                 >
                   <Image
-                    source={{ uri: bill.receiptImageUrl }}
+                    source={{ uri: receiptBlobUrl || bill.receiptImageUrl }}
                     style={styles.billPhotoThumb}
                   />
                   <View style={{ flex: 1 }}>
@@ -1414,7 +1425,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
             </View>
             {bill.receiptImageUrl ? (
               <Image
-                source={{ uri: bill.receiptImageUrl }}
+                source={{ uri: receiptBlobUrl || bill.receiptImageUrl }}
                 style={styles.fullBillPhotoImage}
                 resizeMode="contain"
               />

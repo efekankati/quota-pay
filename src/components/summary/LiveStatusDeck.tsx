@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, Platform } from 'react-native';
 import { Bell, CheckCircle2, Clock, Send } from 'lucide-react-native';
 import { useThemeStore } from '../../store/useThemeStore';
 import { useLanguageStore } from '../../store/useLanguageStore';
@@ -30,8 +30,16 @@ export const LiveStatusDeck: React.FC<LiveStatusDeckProps> = ({
         {t('settlementRealTimeHeader')}
       </Text>
 
-      <View style={styles.list}>
-        {bill.participants.map((participant) => {
+      <FlatList
+        data={bill.participants}
+        keyExtractor={(participant) => participant.id}
+        scrollEnabled={false}
+        initialNumToRender={10}
+        maxToRenderPerBatch={10}
+        windowSize={5}
+        removeClippedSubviews={Platform.OS !== 'web'}
+        ItemSeparatorComponent={() => <View style={{ height: SPACING.sm + 2 }} />}
+        renderItem={({ item: participant }) => {
           const breakdown = getBillShareBreakdown(bill.id, participant.id);
           const isOrg =
             Boolean(participant.isOrganizer) ||
@@ -44,7 +52,6 @@ export const LiveStatusDeck: React.FC<LiveStatusDeckProps> = ({
 
           return (
             <View
-              key={participant.id}
               style={[
                 styles.participantRow,
                 {
@@ -109,8 +116,8 @@ export const LiveStatusDeck: React.FC<LiveStatusDeckProps> = ({
               </View>
             </View>
           );
-        })}
-      </View>
+        }}
+      />
     </View>
   );
 };

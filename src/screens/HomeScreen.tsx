@@ -40,6 +40,7 @@ import { Button } from '../components/common/Button';
 import { showAppAlert } from '../store/useAlertStore';
 import { GeminiReceiptService } from '../services/ai/GeminiReceiptService';
 import { ScanningOverlayHUD } from '../components/scanner/ScanningOverlayHUD';
+import { base64ToBlobUrl, revokeBlobUrl } from '../utils/imageMemoryManager';
 import { SPACING, TYPOGRAPHY, RADIUS } from '../config/theme';
 import { useHaptics } from '../hooks/useHaptics';
 import { BillSession } from '../types/bill';
@@ -91,7 +92,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [isAnalysisComplete, setIsAnalysisComplete] = useState(false);
   const [pendingBillId, setPendingBillId] = useState<string | null>(null);
   const activeBillIdRef = React.useRef<string>('');
+  const activeBlobUrlRef = React.useRef<string | null>(null);
+  const scrollTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const modalScrollRef = React.useRef<React.ComponentRef<typeof ScrollView>>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+      }
+      if (activeBlobUrlRef.current) {
+        revokeBlobUrl(activeBlobUrlRef.current);
+        activeBlobUrlRef.current = null;
+      }
+    };
+  }, []);
 
   // Floating Context Window State
   const [selectedBillForMenu, setSelectedBillForMenu] = useState<BillSession | null>(null);
@@ -213,11 +228,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           createdBillId = newBillId;
           activeBillIdRef.current = newBillId;
 
+          if (activeBlobUrlRef.current) {
+            revokeBlobUrl(activeBlobUrlRef.current);
+          }
+          const managedBlobUrl = base64ToBlobUrl(asset.uri || asset.base64, 'image/jpeg');
+          activeBlobUrlRef.current = managedBlobUrl || null;
+
           setItems(newBillId, lineItems, parsed.copertoTotal, parsed.total);
           updateBillMetadata(newBillId, {
             restaurantName: parsed.restaurantName,
             title: `Bill: ${parsed.restaurantName}`,
-            receiptImageUrl: asset.uri,
+            receiptImageUrl: managedBlobUrl || undefined,
           });
 
           setActiveBill(newBillId);

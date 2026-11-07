@@ -1,15 +1,18 @@
 import { BillSession, LineItem, Participant } from '../../types/bill';
 import { getSupabaseClient } from '../supabase/supabaseClient';
+import { sanitizeReceiptUrlForPersistence } from '../../utils/imageMemoryManager';
 
 class BillSyncServiceImpl {
   private channel: any = null;
   private listeners: Set<(bill: BillSession) => void> = new Set();
   private splitListeners: Map<string, Set<(split: any) => void>> = new Map();
+  private splitChannels: Map<string, any> = new Map();
+  private inFlightFetches: Map<string, Promise<BillSession | null>> = new Map();
   private lastLocalMutationAt: Map<string, number> = new Map();
   private isChannelReady = false;
 
   constructor() {
-    this.initRealtimeChannel();
+    // Channels are lazily initialized on first subscription and torn down via supabase.removeChannel(channel) on unmount
   }
 
   /**
@@ -21,7 +24,8 @@ class BillSyncServiceImpl {
    */
   public mergeBillSessions(
     cloudBill: BillSession | null,
-    localBill: BillSession
+    localBill: BillSession,
+    actorParticipantId?: string
   ): BillSession {
     if (!cloudBill || cloudBill.id !== localBill.id) {
       return localBill;
@@ -49,14 +53,23 @@ class BillSyncServiceImpl {
       if (existingKey) {
         const cloudP = mergedParticipantsMap.get(existingKey)!;
         const isOrg = Boolean(localP.isOrganizer || cloudP.isOrganizer || existingKey === 'user_me');
-        const isPaid = isOrg ? localP.status === 'paid' : (cloudP.status === 'paid' || localP.status === 'paid');
+        const isPaid = isOrg
+          ? Boolean(
+              localP.status === 'paid' ||
+                cloudP.status === 'paid' ||
+                (localP.paidAmount || 0) > 0 ||
+                (cloudP.paidAmount || 0) > 0
+            )
+          : Boolean(cloudP.status === 'paid' || localP.status === 'paid');
         mergedParticipantsMap.set(existingKey, {
           ...cloudP,
           ...localP,
           id: existingKey,
           status: isPaid ? 'paid' : localP.status,
           paidAmount: isOrg
-            ? (localP.paidAmount !== undefined ? localP.paidAmount : cloudP.paidAmount)
+            ? (localP.paidAmount && localP.paidAmount > 0
+                ? localP.paidAmount
+                : cloudP.paidAmount || localP.paidAmount || 0)
             : (isPaid
                 ? Math.max(cloudP.paidAmount || 0, localP.paidAmount || 0)
                 : localP.paidAmount),
@@ -78,10 +91,8 @@ class BillSyncServiceImpl {
     ]);
 
     // 3. Merge Line Items & Participant Claims
-    const localParticipantIds = new Set((localBill.participants || []).map((p) => p.id));
-    // Paid guests in cloudBill have locked, immutable item claims
-    const paidCloudGuestIds = new Set(
-      (cloudBill.participants || [])
+    const paidGuestIds = new Set(
+      mergedParticipants
         .filter((p) => !p.isOrganizer && p.id !== 'user_me' && p.status === 'paid')
         .map((p) => p.id)
     );
@@ -106,21 +117,57 @@ class BillSyncServiceImpl {
       const cloudItem = cloudItemsById.get(localItem.id);
       if (!cloudItem) return localItem;
 
-      // Start with local claimedQuantities, then retain cloud claims from guests that weren't in localBill yet
-      // or guests who have already paid in cloudBill (locked claims)
-      const mergedClaimed: Record<string, number> = {
-        ...(localItem.claimedQuantities || {}),
-      };
-      for (const [pId, qty] of Object.entries(cloudItem.claimedQuantities || {})) {
-        if ((!localParticipantIds.has(pId) || paidCloudGuestIds.has(pId)) && qty > 0) {
-          mergedClaimed[pId] = qty;
+      // Start with all cloud claims, then overlay local claims.
+      // If actorParticipantId is specified, only actorParticipantId can reduce/remove their own claim;
+      // all other participants' claims in cloudItem are preserved so concurrent tabs never wipe each other!
+      const mergedClaimed: Record<string, number> = {};
+
+      if (actorParticipantId) {
+        for (const [pId, qty] of Object.entries(cloudItem.claimedQuantities || {})) {
+          if (pId !== actorParticipantId && qty > 0) {
+            mergedClaimed[pId] = qty;
+          }
+        }
+        for (const [pId, qty] of Object.entries(localItem.claimedQuantities || {})) {
+          if (pId === actorParticipantId) {
+            if (qty > 0 && !paidGuestIds.has(pId)) {
+              mergedClaimed[pId] = qty;
+            }
+          } else if (qty > 0 && mergedClaimed[pId] === undefined) {
+            mergedClaimed[pId] = qty;
+          }
+        }
+      } else {
+        for (const [pId, qty] of Object.entries(localItem.claimedQuantities || {})) {
+          if (qty > 0) {
+            mergedClaimed[pId] = qty;
+          }
+        }
+        for (const [pId, qty] of Object.entries(cloudItem.claimedQuantities || {})) {
+          if (paidGuestIds.has(pId) && qty > 0) {
+            mergedClaimed[pId] = qty;
+          }
         }
       }
 
-      const assignedSet = new Set<string>(localItem.assignedParticipantIds || []);
-      for (const pId of cloudItem.assignedParticipantIds || []) {
-        if (!localParticipantIds.has(pId) || paidCloudGuestIds.has(pId)) {
+      const assignedSet = new Set<string>();
+      if (actorParticipantId) {
+        for (const pId of cloudItem.assignedParticipantIds || []) {
+          if (pId !== actorParticipantId) {
+            assignedSet.add(pId);
+          }
+        }
+        if ((localItem.assignedParticipantIds || []).includes(actorParticipantId)) {
+          assignedSet.add(actorParticipantId);
+        }
+      } else {
+        for (const pId of localItem.assignedParticipantIds || []) {
           assignedSet.add(pId);
+        }
+        for (const pId of cloudItem.assignedParticipantIds || []) {
+          if (paidGuestIds.has(pId)) {
+            assignedSet.add(pId);
+          }
         }
       }
       for (const [pId, qty] of Object.entries(mergedClaimed)) {
@@ -147,9 +194,39 @@ class BillSyncServiceImpl {
     const copertoPerPerson =
       copertoTotal > 0 ? Math.round((copertoTotal / coversCount) * 100) / 100 : 0;
 
+    // Recalculate whether the bill is fully settled across all merged participants
+    const grandTotal =
+      localBill.taxSummary?.grandTotal ||
+      cloudBill.taxSummary?.grandTotal ||
+      localBill.manualTotalAmount ||
+      0;
+    const totalPaidAmount = mergedParticipants.reduce(
+      (sum, p) => (p.status === 'paid' ? sum + (p.paidAmount || 0) : sum),
+      0
+    );
+    const allPaid =
+      mergedParticipants.length > 0 && mergedParticipants.every((p) => p.status === 'paid');
+    const allMoneyCovered =
+      grandTotal > 0 && Math.round(totalPaidAmount * 100) >= Math.round(grandTotal * 100) - 5;
+    const mergedStatus =
+      allPaid && allMoneyCovered
+        ? ('settled' as const)
+        : localBill.status === 'settled' || cloudBill.status === 'settled'
+        ? ('collecting' as const)
+        : localBill.status;
+
+    const cleanReceiptUrl =
+      localBill.receiptImageUrl?.startsWith('blob:')
+        ? localBill.receiptImageUrl
+        : sanitizeReceiptUrlForPersistence(
+            localBill.receiptImageUrl || cloudBill.receiptImageUrl
+          );
+
     return {
       ...cloudBill,
       ...localBill,
+      receiptImageUrl: cleanReceiptUrl,
+      status: mergedStatus,
       participants: mergedParticipants,
       includedParticipantIds: Array.from(includedSet),
       items: mergedItems,
@@ -168,17 +245,19 @@ class BillSyncServiceImpl {
   }
 
   private initRealtimeChannel() {
+    if (this.channel) return;
     const supabase = getSupabaseClient();
     if (!supabase) return;
 
     try {
-      this.channel = supabase.channel('quota_bill_sync', {
+      const channel = supabase.channel('quota_bill_sync', {
         config: {
           broadcast: { self: false },
         },
       });
+      this.channel = channel;
 
-      this.channel
+      channel
         // 1. Peer-to-peer low-latency WebSocket broadcast across all open tabs & Expo Go
         .on('broadcast', { event: 'bill_updated' }, (payload: any) => {
           if (payload?.payload?.bill) {
@@ -202,11 +281,7 @@ class BillSyncServiceImpl {
                 const parsed = JSON.parse(row.title);
                 if (parsed?.bill) {
                   const incoming = parsed.bill as BillSession;
-                  const lastMutated = this.lastLocalMutationAt.get(incoming.id) || 0;
-                  // Ignore self-echo from postgres_changes within 2s of our own local mutation
-                  if (Date.now() - lastMutated > 2000) {
-                    this.notifyListeners(incoming);
-                  }
+                  this.notifyListeners(incoming);
                 }
               }
             } catch {
@@ -226,25 +301,16 @@ class BillSyncServiceImpl {
    * Broadcasts a bill update in real-time to all connected devices (mobile app & web)
    * and persists a conflict-free merged snapshot to Supabase cloud storage.
    */
-  public async broadcastBillUpdate(bill: BillSession): Promise<void> {
+  public async broadcastBillUpdate(
+    bill: BillSession,
+    actorParticipantId?: string
+  ): Promise<void> {
     if (!bill || !bill.id) return;
     this.lastLocalMutationAt.set(bill.id, Date.now());
 
-    // 1. Instant Realtime WebSocket Broadcast for sub-50ms UI responsiveness
-    try {
-      if (this.channel && this.isChannelReady) {
-        await this.channel.send({
-          type: 'broadcast',
-          event: 'bill_updated',
-          payload: { bill },
-        });
-      }
-    } catch (err) {
-      console.warn('[BillSync] Realtime broadcast error:', err);
-    }
-
-    // 2. Cloud Persistence in Supabase with conflict-free multi-guest merge
-    this.saveBillToCloud(bill).catch((err) => {
+    // Persist & merge atomically in Supabase first, then broadcast the canonical merged snapshot
+    // so concurrent tabs never twitch between unmerged and merged states.
+    this.saveBillToCloud(bill, actorParticipantId).catch((err) => {
       console.warn('[BillSync] Cloud save error:', err);
     });
   }
@@ -253,7 +319,10 @@ class BillSyncServiceImpl {
    * Persists a serialized bill session snapshot, merging with any prior guest joins/claims
    * already stored in Supabase so concurrent guests never overwrite each other.
    */
-  public async saveBillToCloud(bill: BillSession): Promise<void> {
+  public async saveBillToCloud(
+    bill: BillSession,
+    actorParticipantId?: string
+  ): Promise<void> {
     const supabase = getSupabaseClient();
     if (!supabase || !bill || !bill.id) return;
 
@@ -271,17 +340,27 @@ class BillSyncServiceImpl {
         try {
           const parsedExisting = JSON.parse(existing[0].title);
           if (parsedExisting?.bill) {
-            mergedBill = this.mergeBillSessions(parsedExisting.bill as BillSession, bill);
+            mergedBill = this.mergeBillSessions(
+              parsedExisting.bill as BillSession,
+              bill,
+              actorParticipantId
+            );
           }
         } catch {
           mergedBill = bill;
         }
       }
 
-      const payloadStr = JSON.stringify({ q_id: mergedBill.id, bill: mergedBill });
+      // Never serialize multi-MB base64 strings or local blob: URLs into cloud JSON payloads
+      const cloudSafeBill: BillSession = {
+        ...mergedBill,
+        receiptImageUrl: sanitizeReceiptUrlForPersistence(mergedBill.receiptImageUrl),
+      };
+
+      const payloadStr = JSON.stringify({ q_id: cloudSafeBill.id, bill: cloudSafeBill });
       const grandTotal =
-        mergedBill.taxSummary?.grandTotal || mergedBill.manualTotalAmount || 0;
-      const status = mergedBill.status === 'settled' ? 'completed' : 'pending';
+        cloudSafeBill.taxSummary?.grandTotal || cloudSafeBill.manualTotalAmount || 0;
+      const status = cloudSafeBill.status === 'settled' ? 'completed' : 'pending';
 
       // 1. Persist merged Bill in `bills` table
       if (existing && existing.length > 0) {
@@ -291,7 +370,7 @@ class BillSyncServiceImpl {
             title: payloadStr,
             total_amount: grandTotal,
             status,
-            currency: mergedBill.currency || 'EUR',
+            currency: cloudSafeBill.currency || 'EUR',
           })
           .eq('id', existing[0].id);
       } else {
@@ -299,34 +378,34 @@ class BillSyncServiceImpl {
           title: payloadStr,
           total_amount: grandTotal,
           status,
-          currency: mergedBill.currency || 'EUR',
+          currency: cloudSafeBill.currency || 'EUR',
         });
       }
 
-      // Broadcast the canonical merged state if merging added participants from other guests
-      if (mergedBill.participants.length > bill.participants.length) {
-        this.notifyListeners(mergedBill);
-        if (this.channel && this.isChannelReady) {
+      // Always notify local store & broadcast the canonical merged state to all open tabs
+      this.notifyListeners(mergedBill);
+      if (this.channel && this.isChannelReady) {
+        try {
           await this.channel.send({
             type: 'broadcast',
             event: 'bill_updated',
-            payload: { bill: mergedBill },
+            payload: { bill: cloudSafeBill },
           });
-        }
+        } catch {}
       }
 
       // 2. Persist Participant Rows in `bill_splits`
       try {
-        const splitsRows = mergedBill.participants.map((p) => {
+        const splitsRows = cloudSafeBill.participants.map((p) => {
           const splitId =
             p.splitId ||
-            `split_${mergedBill.id.replace(/^bill_/, '')}_${p.id.replace(/^part_/, '')}`;
+            `split_${cloudSafeBill.id.replace(/^bill_/, '')}_${p.id.replace(/^part_/, '')}`;
 
           let owedAmount = p.paidAmount || 0;
-          if (mergedBill.splitMode === 'even') {
+          if (cloudSafeBill.splitMode === 'even') {
             const included =
-              mergedBill.includedParticipantIds ||
-              mergedBill.participants.map((pt) => pt.id);
+              cloudSafeBill.includedParticipantIds ||
+              cloudSafeBill.participants.map((pt) => pt.id);
             if (included.includes(p.id)) {
               const count = included.length || 1;
               const totalCents = Math.round(grandTotal * 100);
@@ -341,7 +420,7 @@ class BillSyncServiceImpl {
 
           return {
             id: splitId,
-            bill_id: mergedBill.id,
+            bill_id: cloudSafeBill.id,
             participant_id: p.id,
             participant_name: p.name,
             owed_amount: p.owedAmount !== undefined ? p.owedAmount : owedAmount,
@@ -359,11 +438,11 @@ class BillSyncServiceImpl {
       }
 
       // 3. Persist Line Items in `bill_items` if itemized
-      if (mergedBill.items && mergedBill.items.length > 0) {
+      if (cloudSafeBill.items && cloudSafeBill.items.length > 0) {
         try {
-          const itemsRows = mergedBill.items.map((it) => ({
+          const itemsRows = cloudSafeBill.items.map((it) => ({
             id: it.id,
-            bill_id: mergedBill.id,
+            bill_id: cloudSafeBill.id,
             name: it.name,
             quantity: it.quantity,
             unit_price: it.unitPrice,
@@ -382,27 +461,45 @@ class BillSyncServiceImpl {
   }
 
   /**
-   * Fetches the latest bill session snapshot from the cloud
+   * Fetches the latest bill session snapshot from the cloud.
+   * Deduplicates concurrent in-flight requests for the same billId.
    */
   public async fetchBillFromCloud(billId: string): Promise<BillSession | null> {
     const supabase = getSupabaseClient();
     if (!supabase || !billId) return null;
 
-    try {
-      const { data, error } = await supabase
-        .from('bills')
-        .select('title')
-        .ilike('title', `%${billId}%`)
-        .order('created_at', { ascending: false })
-        .limit(1);
-
-      if (error || !data || data.length === 0) return null;
-
-      const parsed = JSON.parse(data[0].title);
-      return parsed?.bill || null;
-    } catch {
-      return null;
+    const existingPromise = this.inFlightFetches.get(billId);
+    if (existingPromise) {
+      return existingPromise;
     }
+
+    const fetchPromise = (async (): Promise<BillSession | null> => {
+      try {
+        const { data, error } = await supabase
+          .from('bills')
+          .select('title')
+          .ilike('title', `%${billId}%`)
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (error || !data || data.length === 0) return null;
+
+        const parsed = JSON.parse(data[0].title);
+        if (parsed?.bill) {
+          const bill = parsed.bill as BillSession;
+          bill.receiptImageUrl = sanitizeReceiptUrlForPersistence(bill.receiptImageUrl);
+          return bill;
+        }
+        return null;
+      } catch {
+        return null;
+      } finally {
+        this.inFlightFetches.delete(billId);
+      }
+    })();
+
+    this.inFlightFetches.set(billId, fetchPromise);
+    return fetchPromise;
   }
 
   /**
@@ -433,7 +530,8 @@ class BillSyncServiceImpl {
   }
 
   /**
-   * Updates a split status to 'paid' in Supabase and syncs across real-time
+   * Updates a split status to 'paid' in Supabase `bill_splits` table
+   * (The canonical `bills` row is already merged and broadcast by `markParticipantPaid`).
    */
   public async markSplitPaidInCloud(
     billId: string,
@@ -460,26 +558,12 @@ class BillSyncServiceImpl {
         console.warn('[BillSync] markSplitPaidInCloud table update notice:', err);
       }
     }
-
-    const cloudBill = await this.fetchBillFromCloud(billId);
-    if (cloudBill) {
-      cloudBill.participants = cloudBill.participants.map((p) =>
-        p.id === participantId || p.splitId === splitId
-          ? {
-              ...p,
-              status: 'paid',
-              paidAmount,
-              paymentMethod: paymentMethod as any,
-              paidAt,
-            }
-          : p
-      );
-      await this.broadcastBillUpdate(cloudBill);
-    }
   }
 
   /**
    * Subscribes to real-time changes on the `bill_splits` table for this bill.
+   * Deduplicates channel creation per `billId` and strictly executes
+   * `supabase.removeChannel(channel)` when the last subscriber unmounts.
    */
   public subscribeToBillSplits(
     billId: string,
@@ -493,55 +577,77 @@ class BillSyncServiceImpl {
     }
     this.splitListeners.get(billId)!.add(onSplitUpdate);
 
-    const channelName = `realtime_splits_${billId}_${Date.now()}`;
-    const channel = supabase
-      .channel(channelName)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'bill_splits',
-          filter: `bill_id=eq.${billId}`,
-        },
-        (payload: any) => {
-          const updatedRow = payload.new || payload;
-          const listeners = this.splitListeners.get(billId);
-          if (listeners) {
-            listeners.forEach((listener) => {
-              try {
-                listener(updatedRow);
-              } catch (e) {
-                console.warn('[BillSync] Split listener error:', e);
-              }
-            });
+    let channel = this.splitChannels.get(billId);
+    if (!channel) {
+      const channelName = `realtime_splits_${billId}`;
+      channel = supabase
+        .channel(channelName)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'bill_splits',
+            filter: `bill_id=eq.${billId}`,
+          },
+          (payload: any) => {
+            const updatedRow = payload.new || payload;
+            const listeners = this.splitListeners.get(billId);
+            if (listeners) {
+              listeners.forEach((listener) => {
+                try {
+                  listener(updatedRow);
+                } catch (e) {
+                  console.warn('[BillSync] Split listener error:', e);
+                }
+              });
+            }
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
+
+      this.splitChannels.set(billId, channel);
+    }
 
     return () => {
       const listeners = this.splitListeners.get(billId);
       if (listeners) {
         listeners.delete(onSplitUpdate);
+        if (listeners.size === 0) {
+          this.splitListeners.delete(billId);
+          const activeChannel = this.splitChannels.get(billId) || channel;
+          this.splitChannels.delete(billId);
+          if (activeChannel) {
+            supabase.removeChannel(activeChannel);
+          }
+        }
       }
-      try {
-        supabase.removeChannel(channel);
-      } catch {}
     };
   }
 
   /**
    * Subscribes to real-time bill updates.
-   * Returns an unsubscribe callback.
+   * Deduplicates the underlying `quota_bill_sync` channel and strictly calls
+   * `supabase.removeChannel(channel)` when the last subscriber unmounts.
    */
   public subscribeToBillUpdates(listener: (bill: BillSession) => void): () => void {
+    const supabase = getSupabaseClient();
     this.listeners.add(listener);
     if (!this.channel) {
       this.initRealtimeChannel();
     }
+    const channel = this.channel;
+
     return () => {
       this.listeners.delete(listener);
+      if (this.listeners.size === 0 && (this.channel || channel)) {
+        const activeChannel = this.channel || channel;
+        this.channel = null;
+        this.isChannelReady = false;
+        if (supabase && activeChannel) {
+          supabase.removeChannel(activeChannel);
+        }
+      }
     };
   }
 }

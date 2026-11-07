@@ -70,8 +70,9 @@ export const QrShareModal: React.FC<QrShareModalProps> = ({
   const scaleAnim = useRef(new Animated.Value(0.88)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
 
-  // Cleanup reference for screen brightness restoration
+  // Cleanup reference for screen brightness restoration & copy timer
   const brightnessCleanupRef = useRef<(() => Promise<void>) | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Generate SVG Path for QR Code Matrix
   const { matrix, svgPath, moduleCount } = useMemo(() => {
@@ -152,6 +153,12 @@ export const QrShareModal: React.FC<QrShareModalProps> = ({
     return () => {
       isMounted = false;
       backSub?.remove();
+      if (copyTimerRef.current) {
+        clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = null;
+      }
+      scaleAnim.stopAnimation();
+      opacityAnim.stopAnimation();
       if (brightnessCleanupRef.current) {
         brightnessCleanupRef.current();
         brightnessCleanupRef.current = null;
@@ -187,7 +194,10 @@ export const QrShareModal: React.FC<QrShareModalProps> = ({
     successNotification();
     await Clipboard.setStringAsync(targetValue);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2400);
+    if (copyTimerRef.current) {
+      clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = setTimeout(() => setCopied(false), 2400);
   };
 
   if (!visible) return null;

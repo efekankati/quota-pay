@@ -26,6 +26,7 @@ import { Badge } from '../common/Badge';
 import { FloatingBottomModal } from '../common/FloatingBottomModal';
 import { RADIUS, SHADOWS, SPACING, TYPOGRAPHY } from '../../config/theme';
 import { useHaptics } from '../../hooks/useHaptics';
+import { useReceiptBlobUrl } from '../../utils/imageMemoryManager';
 
 interface ReceiptContextMenuModalProps {
   visible: boolean;
@@ -50,6 +51,7 @@ export const ReceiptContextMenuModal: React.FC<ReceiptContextMenuModalProps> = (
   const { t } = useLanguageStore();
   const { lightImpact, mediumImpact, heavyImpact } = useHaptics();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const receiptBlobUrl = useReceiptBlobUrl(bill?.receiptImageUrl);
 
   // Reset state when closing
   const handleClose = () => {
@@ -143,9 +145,9 @@ export const ReceiptContextMenuModal: React.FC<ReceiptContextMenuModalProps> = (
                   },
                 ]}
               >
-                {bill.receiptImageUrl && (
+                {receiptBlobUrl && (
                   <Image
-                    source={{ uri: bill.receiptImageUrl }}
+                    source={{ uri: receiptBlobUrl }}
                     style={styles.receiptThumb}
                     resizeMode="cover"
                   />

@@ -9,6 +9,11 @@ import {
 } from '../types/bill';
 import { BillSyncService } from '../services/sync/BillSyncService';
 import { useAuthStore } from './useAuthStore';
+import {
+  base64ToBlobUrl,
+  revokeBlobUrl,
+  sanitizeReceiptUrlForPersistence,
+} from '../utils/imageMemoryManager';
 
 interface BillStoreState {
   bills: BillSession[];
@@ -257,6 +262,10 @@ export const useBillStore = create<BillStoreState>()(
       return;
     }
     set((state) => {
+      const target = state.bills.find((b) => b.id === billId);
+      if (target?.receiptImageUrl) {
+        revokeBlobUrl(target.receiptImageUrl);
+      }
       const remaining = state.bills.filter((b) => b.id !== billId);
       const nextActiveId =
         state.activeBillId === billId
@@ -271,21 +280,32 @@ export const useBillStore = create<BillStoreState>()(
 
   updateBillMetadata: (billId, data) => {
     set((state) => ({
-      bills: state.bills.map((b) =>
-        b.id === billId
-          ? {
-              ...b,
-              restaurantName: data.restaurantName !== undefined ? data.restaurantName : b.restaurantName,
-              title: data.title !== undefined ? data.title : b.title,
-              receiptImageUrl: data.receiptImageUrl !== undefined ? data.receiptImageUrl : b.receiptImageUrl,
-              notes: data.notes !== undefined ? data.notes : b.notes,
-              currency: data.currency !== undefined ? data.currency : b.currency,
-              manualTotalAmount: data.manualTotalAmount !== undefined ? data.manualTotalAmount : b.manualTotalAmount,
-              splitMode: data.splitMode !== undefined ? data.splitMode : b.splitMode,
-              isManual: data.isManual !== undefined ? data.isManual : b.isManual,
-            }
-          : b
-      ),
+      bills: state.bills.map((b) => {
+        if (b.id !== billId) return b;
+        let nextReceiptUrl = b.receiptImageUrl;
+        if (data.receiptImageUrl !== undefined) {
+          const incomingUrl = data.receiptImageUrl
+            ? data.receiptImageUrl.startsWith('data:')
+              ? base64ToBlobUrl(data.receiptImageUrl)
+              : data.receiptImageUrl
+            : '';
+          if (b.receiptImageUrl && b.receiptImageUrl !== incomingUrl) {
+            revokeBlobUrl(b.receiptImageUrl);
+          }
+          nextReceiptUrl = incomingUrl || undefined;
+        }
+        return {
+          ...b,
+          restaurantName: data.restaurantName !== undefined ? data.restaurantName : b.restaurantName,
+          title: data.title !== undefined ? data.title : b.title,
+          receiptImageUrl: nextReceiptUrl,
+          notes: data.notes !== undefined ? data.notes : b.notes,
+          currency: data.currency !== undefined ? data.currency : b.currency,
+          manualTotalAmount: data.manualTotalAmount !== undefined ? data.manualTotalAmount : b.manualTotalAmount,
+          splitMode: data.splitMode !== undefined ? data.splitMode : b.splitMode,
+          isManual: data.isManual !== undefined ? data.isManual : b.isManual,
+        };
+      }),
     }));
     const updated = get().bills.find((b) => b.id === billId);
     if (updated) {
@@ -878,13 +898,60 @@ export const useBillStore = create<BillStoreState>()(
             assignedParticipantIds: newAssigned,
           };
         });
-        return { ...bill, items: updatedItems };
+
+        // Keep organizer paidAmount in sync with their claimed items so cloud & guest links always reflect it
+        const orgP = bill.participants.find(
+          (p) => p.isOrganizer || p.id === bill.organizerId || p.id === 'user_me'
+        );
+        let updatedParticipants = bill.participants;
+        if (orgP && !bill.isManual) {
+          let orgItemsShare = 0;
+          let orgClaimedCount = 0;
+          updatedItems.forEach((it) => {
+            if (it.isCoperto) return;
+            const cMap = it.claimedQuantities || {};
+            const totalC = Object.values(cMap).reduce((s, q) => s + (q || 0), 0);
+            const orgC = cMap[orgP.id] ?? cMap[bill.organizerId] ?? cMap['user_me'] ?? 0;
+            const aIds = it.assignedParticipantIds || [];
+            const isOrgAssigned =
+              aIds.includes(orgP.id) || aIds.includes(bill.organizerId) || aIds.includes('user_me');
+            if (totalC > 0 && totalC <= it.quantity && orgC > 0) {
+              orgClaimedCount += orgC;
+              orgItemsShare += orgC * it.unitPrice;
+            } else if (isOrgAssigned && aIds.length > 0) {
+              orgClaimedCount += 1;
+              orgItemsShare += Math.round((it.totalPrice / aIds.length) * 100) / 100;
+            }
+          });
+          const hasCoperto = updatedItems.some((it) => it.isCoperto);
+          const orgCoperto = hasCoperto && orgClaimedCount > 0 ? bill.copertoPerPerson || 0 : 0;
+          const orgBase = orgItemsShare + orgCoperto;
+          const orgTip =
+            bill.tipCustomAmount && bill.tipCustomAmount > 0
+              ? bill.tipCustomAmount
+              : bill.tipPercentage > 0
+              ? Math.round(orgBase * (bill.tipPercentage / 100) * 100) / 100
+              : 0;
+          const orgDue = Math.round((orgBase + orgTip) * 100) / 100;
+          updatedParticipants = bill.participants.map((p) =>
+            p.id === orgP.id
+              ? {
+                  ...p,
+                  status: orgDue > 0 ? ('paid' as const) : p.status,
+                  paidAmount: orgDue,
+                  paidAt: orgDue > 0 ? p.paidAt || new Date().toISOString() : p.paidAt,
+                }
+              : p
+          );
+        }
+
+        return { ...bill, items: updatedItems, participants: updatedParticipants };
       });
       return { bills };
     });
     const updated = get().bills.find((b) => b.id === billId);
     if (updated) {
-      BillSyncService.broadcastBillUpdate(updated);
+      BillSyncService.broadcastBillUpdate(updated, participantId);
     }
   },
 
@@ -932,13 +999,60 @@ export const useBillStore = create<BillStoreState>()(
             assignedParticipantIds: newAssigned,
           };
         });
-        return { ...bill, items: updatedItems };
+
+        // Keep organizer paidAmount in sync with their claimed items so cloud & guest links always reflect it
+        const orgP = bill.participants.find(
+          (p) => p.isOrganizer || p.id === bill.organizerId || p.id === 'user_me'
+        );
+        let updatedParticipants = bill.participants;
+        if (orgP && !bill.isManual) {
+          let orgItemsShare = 0;
+          let orgClaimedCount = 0;
+          updatedItems.forEach((it) => {
+            if (it.isCoperto) return;
+            const cMap = it.claimedQuantities || {};
+            const totalC = Object.values(cMap).reduce((s, q) => s + (q || 0), 0);
+            const orgC = cMap[orgP.id] ?? cMap[bill.organizerId] ?? cMap['user_me'] ?? 0;
+            const aIds = it.assignedParticipantIds || [];
+            const isOrgAssigned =
+              aIds.includes(orgP.id) || aIds.includes(bill.organizerId) || aIds.includes('user_me');
+            if (totalC > 0 && totalC <= it.quantity && orgC > 0) {
+              orgClaimedCount += orgC;
+              orgItemsShare += orgC * it.unitPrice;
+            } else if (isOrgAssigned && aIds.length > 0) {
+              orgClaimedCount += 1;
+              orgItemsShare += Math.round((it.totalPrice / aIds.length) * 100) / 100;
+            }
+          });
+          const hasCoperto = updatedItems.some((it) => it.isCoperto);
+          const orgCoperto = hasCoperto && orgClaimedCount > 0 ? bill.copertoPerPerson || 0 : 0;
+          const orgBase = orgItemsShare + orgCoperto;
+          const orgTip =
+            bill.tipCustomAmount && bill.tipCustomAmount > 0
+              ? bill.tipCustomAmount
+              : bill.tipPercentage > 0
+              ? Math.round(orgBase * (bill.tipPercentage / 100) * 100) / 100
+              : 0;
+          const orgDue = Math.round((orgBase + orgTip) * 100) / 100;
+          updatedParticipants = bill.participants.map((p) =>
+            p.id === orgP.id
+              ? {
+                  ...p,
+                  status: orgDue > 0 ? ('paid' as const) : p.status,
+                  paidAmount: orgDue,
+                  paidAt: orgDue > 0 ? p.paidAt || new Date().toISOString() : p.paidAt,
+                }
+              : p
+          );
+        }
+
+        return { ...bill, items: updatedItems, participants: updatedParticipants };
       });
       return { bills };
     });
     const updated = get().bills.find((b) => b.id === billId);
     if (updated) {
-      BillSyncService.broadcastBillUpdate(updated);
+      BillSyncService.broadcastBillUpdate(updated, participantId);
     }
   },
 
@@ -1112,6 +1226,12 @@ export const useBillStore = create<BillStoreState>()(
     let itemsShare = 0;
     let claimedItemCount = 0;
 
+    const participant = bill.participants.find((p) => p.id === participantId);
+    const isOrganizer =
+      Boolean(participant?.isOrganizer) ||
+      participantId === bill.organizerId ||
+      participantId === 'user_me';
+
     bill.items.forEach((item) => {
       if (item.isCoperto) {
         // Coperto tracked separately per seated diner if receipt has coperto item
@@ -1119,11 +1239,20 @@ export const useBillStore = create<BillStoreState>()(
       }
 
       const assignedIds = item.assignedParticipantIds || [];
-      const isAssigned = assignedIds.includes(participantId);
+      const isAssigned = isOrganizer
+        ? assignedIds.includes(participantId) ||
+          assignedIds.includes(bill.organizerId) ||
+          assignedIds.includes('user_me')
+        : assignedIds.includes(participantId);
 
       const claimedMap = item.claimedQuantities || {};
       const totalClaimedUnits = Object.values(claimedMap).reduce((sum, q) => sum + (q || 0), 0);
-      const myClaimedUnits = claimedMap[participantId] || 0;
+      const myClaimedUnits = isOrganizer
+        ? (claimedMap[participantId] ??
+           claimedMap[bill.organizerId] ??
+           claimedMap['user_me'] ??
+           0)
+        : (claimedMap[participantId] || 0);
 
       // 1. Explicit individual claiming (stepper in ItemizerScreen/GuestClaimScreen):
       // Only valid when diner claimed positive units and total claimed units across table does not exceed item quantity
@@ -1142,7 +1271,11 @@ export const useBillStore = create<BillStoreState>()(
         const count = assignedIds.length;
         const baseCents = Math.floor(totalCents / count);
         const remainderCents = totalCents % count;
-        const idx = assignedIds.indexOf(participantId);
+        let idx = assignedIds.indexOf(participantId);
+        if (idx === -1 && isOrganizer) {
+          idx = assignedIds.indexOf(bill.organizerId);
+          if (idx === -1) idx = assignedIds.indexOf('user_me');
+        }
         if (idx !== -1) {
           const shareCents = baseCents + (idx < remainderCents ? 1 : 0);
           itemsShare += shareCents / 100;
@@ -1158,12 +1291,6 @@ export const useBillStore = create<BillStoreState>()(
     const baseAmount = itemsShare + copertoShare;
 
     // Tip is only for the organizer - guest diners do not pay tips
-    const participant = bill.participants.find((p) => p.id === participantId);
-    const isOrganizer =
-      Boolean(participant?.isOrganizer) ||
-      participantId === bill.organizerId ||
-      participantId === 'user_me';
-
     let tipShare = 0;
     if (isOrganizer) {
       if (bill.tipCustomAmount !== undefined && bill.tipCustomAmount > 0) {
@@ -1272,6 +1399,14 @@ export const useBillStore = create<BillStoreState>()(
             taxSummary: existing.taxSummary?.grandTotal ? existing.taxSummary : incomingBill.taxSummary,
             copertoPerPerson: existing.copertoPerPerson || incomingBill.copertoPerPerson,
           };
+        }
+
+        // Skip state mutation if mergedBill is identical to existing (prevents multi-tab twitching & localStorage churn)
+        if (
+          state.activeBillId === incomingBill.id &&
+          JSON.stringify(existing) === JSON.stringify(mergedBill)
+        ) {
+          return state;
         }
 
         const updated = [...state.bills];
@@ -1406,10 +1541,16 @@ export const useBillStore = create<BillStoreState>()(
     {
       name: 'quota_bills_storage',
       storage: createJSONStorage(() => universalStorage),
-      partialize: (state) => ({ bills: state.bills, activeBillId: state.activeBillId }),
+      partialize: (state) => ({
+        bills: state.bills.slice(0, 25).map((b) => ({
+          ...b,
+          receiptImageUrl: sanitizeReceiptUrlForPersistence(b.receiptImageUrl),
+        })),
+        activeBillId: state.activeBillId,
+      }),
       onRehydrateStorage: () => (state) => {
         if (!state?.bills) return;
-        state.bills = state.bills.map((bill) => {
+        state.bills = state.bills.slice(0, 25).map((bill) => {
           let updatedHolder = bill.organizerAccountHolder;
           if (!updatedHolder || updatedHolder === 'Lorenzo De Angelis') {
             updatedHolder = 'Ilaria di Piu Bella in Mondo';
@@ -1433,6 +1574,7 @@ export const useBillStore = create<BillStoreState>()(
           });
           return {
             ...bill,
+            receiptImageUrl: sanitizeReceiptUrlForPersistence(bill.receiptImageUrl),
             splitMode: isScannedReceipt ? 'by_item' : bill.splitMode,
             manualTotalAmount: isScannedReceipt ? undefined : bill.manualTotalAmount,
             organizerAccountHolder: updatedHolder,
@@ -1443,50 +1585,3 @@ export const useBillStore = create<BillStoreState>()(
     }
   )
 );
-
-// Cross-tab real-time synchronization on web
-if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-  window.addEventListener('storage', (event) => {
-    if (event.key === 'quota_bills_storage' && event.newValue) {
-      try {
-        const parsed = JSON.parse(event.newValue);
-        if (parsed.state?.bills) {
-          useBillStore.setState({
-            bills: parsed.state.bills,
-            ...(parsed.state.activeBillId ? { activeBillId: parsed.state.activeBillId } : {}),
-          });
-        }
-      } catch {}
-    }
-  });
-}
-
-// Cross-device real-time sync via Supabase (Mobile App <-> Web Browser)
-BillSyncService.subscribeToBillUpdates((cloudBill) => {
-  if (cloudBill && cloudBill.id) {
-    const existing = useBillStore.getState().bills.find((b) => b.id === cloudBill.id);
-    if (!existing) {
-      useBillStore.getState().upsertBill(cloudBill);
-      return;
-    }
-
-    // Do not downgrade local items if incoming snapshot has empty items
-    if (existing.items && existing.items.length > 0 && (!cloudBill.items || cloudBill.items.length === 0)) {
-      return;
-    }
-
-    // Always update if any participants, items, or status differ
-    const existingItemsJson = JSON.stringify(existing.items);
-    const cloudItemsJson = JSON.stringify(cloudBill.items);
-    const existingParticipantsJson = JSON.stringify(existing.participants);
-    const cloudParticipantsJson = JSON.stringify(cloudBill.participants);
-
-    if (
-      existing.status !== cloudBill.status ||
-      existingItemsJson !== cloudItemsJson ||
-      existingParticipantsJson !== cloudParticipantsJson
-    ) {
-      useBillStore.getState().upsertBill(cloudBill);
-    }
-  }
-});

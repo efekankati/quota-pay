@@ -1,9 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
+  FlatList,
   Modal,
   TextInput,
   TouchableOpacity,
@@ -314,15 +314,22 @@ export const ItemizerScreen: React.FC<ItemizerScreenProps> = ({
         </TouchableOpacity>
       </View>
 
-      {/* Line Items List */}
-      <ScrollView contentContainerStyle={styles.itemsScroll}>
-        <Text style={[styles.listHeader, { color: colors.textSecondary }]}>
-          {t('tapToAssignPrompt', { name: selectedDiner?.name.split(' ')[0] || '' })}
-        </Text>
-
-        {filteredItems.map((item) => (
+      {/* Virtualized Line Items List */}
+      <FlatList
+        data={filteredItems}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={styles.itemsScroll}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={5}
+        removeClippedSubviews={Platform.OS !== 'web'}
+        ListHeaderComponent={
+          <Text style={[styles.listHeader, { color: colors.textSecondary }]}>
+            {t('tapToAssignPrompt', { name: selectedDiner?.name.split(' ')[0] || '' })}
+          </Text>
+        }
+        renderItem={({ item }) => (
           <LineItemRow
-            key={item.id}
             item={item}
             participants={bill.participants}
             selectedParticipantId={selectedParticipantId}
@@ -351,17 +358,16 @@ export const ItemizerScreen: React.FC<ItemizerScreenProps> = ({
               setItemClaimedQuantity(bill.id, item.id, selectedParticipantId, newQty);
             }}
           />
-        ))}
-
-        {filteredItems.length === 0 && (
+        )}
+        ListEmptyComponent={
           <View style={styles.emptyFilterContainer}>
             <Utensils size={32} color={colors.textTertiary} />
             <Text style={[styles.emptyFilterText, { color: colors.textSecondary }]}>
               {t('emptyFilterText')}
             </Text>
           </View>
-        )}
-      </ScrollView>
+        }
+      />
 
       {/* Floating Bottom Bar with Live Subtotal & Proceed CTA */}
       <View

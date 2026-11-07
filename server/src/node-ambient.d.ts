@@ -12,6 +12,13 @@ declare var process: {
   cwd(): string;
   exit(code?: number): never;
   argv: string[];
+  memoryUsage(): {
+    rss: number;
+    heapTotal: number;
+    heapUsed: number;
+    external: number;
+    arrayBuffers?: number;
+  };
 };
 
 interface Buffer {
@@ -31,13 +38,19 @@ declare module 'http' {
     on(event: 'data', listener: (chunk: Buffer) => void): this;
     on(event: 'end', listener: () => void): this;
     on(event: 'error', listener: (err: Error) => void): this;
+    resume(): this;
     destroy(): void;
   }
   export interface ServerResponse {
+    headersSent?: boolean;
     writeHead(statusCode: number, headers?: Record<string, string>): this;
     end(data?: string | Buffer): void;
+    destroy(): void;
   }
   export interface Server {
+    keepAliveTimeout?: number;
+    headersTimeout?: number;
+    requestTimeout?: number;
     listen(port: number, hostname?: string, listeningListener?: () => void): this;
     listen(port: number, listeningListener?: () => void): this;
     close(callback?: (err?: Error) => void): this;
@@ -56,7 +69,11 @@ declare module 'fs' {
   export function existsSync(path: string): boolean;
   export function readFileSync(path: string, encoding: string): string;
   export function statSync(path: string): { isDirectory(): boolean; isFile(): boolean };
-  export function createReadStream(path: string): { pipe(dest: any): any };
+  export function createReadStream(path: string): {
+    pipe(dest: any): any;
+    on(event: string, listener: (...args: any[]) => void): any;
+    destroy(): void;
+  };
   const fsDefault: {
     existsSync: typeof existsSync;
     readFileSync: typeof readFileSync;
@@ -78,4 +95,27 @@ declare module 'path' {
     extname: typeof extname;
   };
   export default pathDefault;
+}
+
+declare module 'zlib' {
+  export const constants: {
+    BROTLI_PARAM_QUALITY: number;
+    Z_BEST_SPEED: number;
+  };
+  export function createBrotliCompress(options?: { params?: Record<number, number> }): any;
+  export function createGzip(options?: { level?: number }): any;
+  const zlibDefault: {
+    constants: typeof constants;
+    createBrotliCompress: typeof createBrotliCompress;
+    createGzip: typeof createGzip;
+  };
+  export default zlibDefault;
+}
+
+declare module 'stream' {
+  export function pipeline(...streams: any[]): any;
+  const streamDefault: {
+    pipeline: typeof pipeline;
+  };
+  export default streamDefault;
 }
