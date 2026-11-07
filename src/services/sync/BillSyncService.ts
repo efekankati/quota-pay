@@ -1,15 +1,18 @@
 import { BillSession, LineItem, Participant } from '../../types/bill';
 import { getSupabaseClient } from '../supabase/supabaseClient';
+import { sanitizeReceiptUrlForPersistence } from '../../utils/imageMemoryManager';
 
 class BillSyncServiceImpl {
   private channel: any = null;
   private listeners: Set<(bill: BillSession) => void> = new Set();
   private splitListeners: Map<string, Set<(split: any) => void>> = new Map();
+  private splitChannels: Map<string, any> = new Map();
+  private inFlightFetches: Map<string, Promise<BillSession | null>> = new Map();
   private lastLocalMutationAt: Map<string, number> = new Map();
   private isChannelReady = false;
 
   constructor() {
-    this.initRealtimeChannel();
+    // Channels are lazily initialized on first subscription and torn down via supabase.removeChannel(channel) on unmount
   }
 
   /**
@@ -135,8 +138,6 @@ class BillSyncServiceImpl {
           }
         }
       } else {
-        // When merging an incoming cloud snapshot into local state (no specific single-actor mutation),
-        // localBill is the incoming snapshot (Param 2 in upsertBill), while paid guests' claims in cloudBill are locked
         for (const [pId, qty] of Object.entries(localItem.claimedQuantities || {})) {
           if (qty > 0) {
             mergedClaimed[pId] = qty;
@@ -214,9 +215,17 @@ class BillSyncServiceImpl {
         ? ('collecting' as const)
         : localBill.status;
 
+    const cleanReceiptUrl =
+      localBill.receiptImageUrl?.startsWith('blob:')
+        ? localBill.receiptImageUrl
+        : sanitizeReceiptUrlForPersistence(
+            localBill.receiptImageUrl || cloudBill.receiptImageUrl
+          );
+
     return {
       ...cloudBill,
       ...localBill,
+      receiptImageUrl: cleanReceiptUrl,
       status: mergedStatus,
       participants: mergedParticipants,
       includedParticipantIds: Array.from(includedSet),
@@ -236,17 +245,19 @@ class BillSyncServiceImpl {
   }
 
   private initRealtimeChannel() {
+    if (this.channel) return;
     const supabase = getSupabaseClient();
     if (!supabase) return;
 
     try {
-      this.channel = supabase.channel('quota_bill_sync', {
+      const channel = supabase.channel('quota_bill_sync', {
         config: {
           broadcast: { self: false },
         },
       });
+      this.channel = channel;
 
-      this.channel
+      channel
         // 1. Peer-to-peer low-latency WebSocket broadcast across all open tabs & Expo Go
         .on('broadcast', { event: 'bill_updated' }, (payload: any) => {
           if (payload?.payload?.bill) {
@@ -340,10 +351,16 @@ class BillSyncServiceImpl {
         }
       }
 
-      const payloadStr = JSON.stringify({ q_id: mergedBill.id, bill: mergedBill });
+      // Never serialize multi-MB base64 strings or local blob: URLs into cloud JSON payloads
+      const cloudSafeBill: BillSession = {
+        ...mergedBill,
+        receiptImageUrl: sanitizeReceiptUrlForPersistence(mergedBill.receiptImageUrl),
+      };
+
+      const payloadStr = JSON.stringify({ q_id: cloudSafeBill.id, bill: cloudSafeBill });
       const grandTotal =
-        mergedBill.taxSummary?.grandTotal || mergedBill.manualTotalAmount || 0;
-      const status = mergedBill.status === 'settled' ? 'completed' : 'pending';
+        cloudSafeBill.taxSummary?.grandTotal || cloudSafeBill.manualTotalAmount || 0;
+      const status = cloudSafeBill.status === 'settled' ? 'completed' : 'pending';
 
       // 1. Persist merged Bill in `bills` table
       if (existing && existing.length > 0) {
@@ -353,7 +370,7 @@ class BillSyncServiceImpl {
             title: payloadStr,
             total_amount: grandTotal,
             status,
-            currency: mergedBill.currency || 'EUR',
+            currency: cloudSafeBill.currency || 'EUR',
           })
           .eq('id', existing[0].id);
       } else {
@@ -361,7 +378,7 @@ class BillSyncServiceImpl {
           title: payloadStr,
           total_amount: grandTotal,
           status,
-          currency: mergedBill.currency || 'EUR',
+          currency: cloudSafeBill.currency || 'EUR',
         });
       }
 
@@ -372,23 +389,23 @@ class BillSyncServiceImpl {
           await this.channel.send({
             type: 'broadcast',
             event: 'bill_updated',
-            payload: { bill: mergedBill },
+            payload: { bill: cloudSafeBill },
           });
         } catch {}
       }
 
       // 2. Persist Participant Rows in `bill_splits`
       try {
-        const splitsRows = mergedBill.participants.map((p) => {
+        const splitsRows = cloudSafeBill.participants.map((p) => {
           const splitId =
             p.splitId ||
-            `split_${mergedBill.id.replace(/^bill_/, '')}_${p.id.replace(/^part_/, '')}`;
+            `split_${cloudSafeBill.id.replace(/^bill_/, '')}_${p.id.replace(/^part_/, '')}`;
 
           let owedAmount = p.paidAmount || 0;
-          if (mergedBill.splitMode === 'even') {
+          if (cloudSafeBill.splitMode === 'even') {
             const included =
-              mergedBill.includedParticipantIds ||
-              mergedBill.participants.map((pt) => pt.id);
+              cloudSafeBill.includedParticipantIds ||
+              cloudSafeBill.participants.map((pt) => pt.id);
             if (included.includes(p.id)) {
               const count = included.length || 1;
               const totalCents = Math.round(grandTotal * 100);
@@ -403,7 +420,7 @@ class BillSyncServiceImpl {
 
           return {
             id: splitId,
-            bill_id: mergedBill.id,
+            bill_id: cloudSafeBill.id,
             participant_id: p.id,
             participant_name: p.name,
             owed_amount: p.owedAmount !== undefined ? p.owedAmount : owedAmount,
@@ -421,11 +438,11 @@ class BillSyncServiceImpl {
       }
 
       // 3. Persist Line Items in `bill_items` if itemized
-      if (mergedBill.items && mergedBill.items.length > 0) {
+      if (cloudSafeBill.items && cloudSafeBill.items.length > 0) {
         try {
-          const itemsRows = mergedBill.items.map((it) => ({
+          const itemsRows = cloudSafeBill.items.map((it) => ({
             id: it.id,
-            bill_id: mergedBill.id,
+            bill_id: cloudSafeBill.id,
             name: it.name,
             quantity: it.quantity,
             unit_price: it.unitPrice,
@@ -444,27 +461,45 @@ class BillSyncServiceImpl {
   }
 
   /**
-   * Fetches the latest bill session snapshot from the cloud
+   * Fetches the latest bill session snapshot from the cloud.
+   * Deduplicates concurrent in-flight requests for the same billId.
    */
   public async fetchBillFromCloud(billId: string): Promise<BillSession | null> {
     const supabase = getSupabaseClient();
     if (!supabase || !billId) return null;
 
-    try {
-      const { data, error } = await supabase
-        .from('bills')
-        .select('title')
-        .ilike('title', `%${billId}%`)
-        .order('created_at', { ascending: false })
-        .limit(1);
-
-      if (error || !data || data.length === 0) return null;
-
-      const parsed = JSON.parse(data[0].title);
-      return parsed?.bill || null;
-    } catch {
-      return null;
+    const existingPromise = this.inFlightFetches.get(billId);
+    if (existingPromise) {
+      return existingPromise;
     }
+
+    const fetchPromise = (async (): Promise<BillSession | null> => {
+      try {
+        const { data, error } = await supabase
+          .from('bills')
+          .select('title')
+          .ilike('title', `%${billId}%`)
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (error || !data || data.length === 0) return null;
+
+        const parsed = JSON.parse(data[0].title);
+        if (parsed?.bill) {
+          const bill = parsed.bill as BillSession;
+          bill.receiptImageUrl = sanitizeReceiptUrlForPersistence(bill.receiptImageUrl);
+          return bill;
+        }
+        return null;
+      } catch {
+        return null;
+      } finally {
+        this.inFlightFetches.delete(billId);
+      }
+    })();
+
+    this.inFlightFetches.set(billId, fetchPromise);
+    return fetchPromise;
   }
 
   /**
@@ -527,6 +562,8 @@ class BillSyncServiceImpl {
 
   /**
    * Subscribes to real-time changes on the `bill_splits` table for this bill.
+   * Deduplicates channel creation per `billId` and strictly executes
+   * `supabase.removeChannel(channel)` when the last subscriber unmounts.
    */
   public subscribeToBillSplits(
     billId: string,
@@ -540,55 +577,77 @@ class BillSyncServiceImpl {
     }
     this.splitListeners.get(billId)!.add(onSplitUpdate);
 
-    const channelName = `realtime_splits_${billId}_${Date.now()}`;
-    const channel = supabase
-      .channel(channelName)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'bill_splits',
-          filter: `bill_id=eq.${billId}`,
-        },
-        (payload: any) => {
-          const updatedRow = payload.new || payload;
-          const listeners = this.splitListeners.get(billId);
-          if (listeners) {
-            listeners.forEach((listener) => {
-              try {
-                listener(updatedRow);
-              } catch (e) {
-                console.warn('[BillSync] Split listener error:', e);
-              }
-            });
+    let channel = this.splitChannels.get(billId);
+    if (!channel) {
+      const channelName = `realtime_splits_${billId}`;
+      channel = supabase
+        .channel(channelName)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'bill_splits',
+            filter: `bill_id=eq.${billId}`,
+          },
+          (payload: any) => {
+            const updatedRow = payload.new || payload;
+            const listeners = this.splitListeners.get(billId);
+            if (listeners) {
+              listeners.forEach((listener) => {
+                try {
+                  listener(updatedRow);
+                } catch (e) {
+                  console.warn('[BillSync] Split listener error:', e);
+                }
+              });
+            }
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
+
+      this.splitChannels.set(billId, channel);
+    }
 
     return () => {
       const listeners = this.splitListeners.get(billId);
       if (listeners) {
         listeners.delete(onSplitUpdate);
+        if (listeners.size === 0) {
+          this.splitListeners.delete(billId);
+          const activeChannel = this.splitChannels.get(billId) || channel;
+          this.splitChannels.delete(billId);
+          if (activeChannel) {
+            supabase.removeChannel(activeChannel);
+          }
+        }
       }
-      try {
-        supabase.removeChannel(channel);
-      } catch {}
     };
   }
 
   /**
    * Subscribes to real-time bill updates.
-   * Returns an unsubscribe callback.
+   * Deduplicates the underlying `quota_bill_sync` channel and strictly calls
+   * `supabase.removeChannel(channel)` when the last subscriber unmounts.
    */
   public subscribeToBillUpdates(listener: (bill: BillSession) => void): () => void {
+    const supabase = getSupabaseClient();
     this.listeners.add(listener);
     if (!this.channel) {
       this.initRealtimeChannel();
     }
+    const channel = this.channel;
+
     return () => {
       this.listeners.delete(listener);
+      if (this.listeners.size === 0 && (this.channel || channel)) {
+        const activeChannel = this.channel || channel;
+        this.channel = null;
+        this.isChannelReady = false;
+        if (supabase && activeChannel) {
+          supabase.removeChannel(activeChannel);
+        }
+      }
     };
   }
 }

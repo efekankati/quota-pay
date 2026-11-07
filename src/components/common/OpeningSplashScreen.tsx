@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -66,6 +66,34 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
 
   const isCompletedRef = useRef(false);
   const activeAnimationRef = useRef<Animated.CompositeAnimation | null>(null);
+  const skipAnimationRef = useRef<Animated.CompositeAnimation | null>(null);
+  const [isUnmounted, setIsUnmounted] = useState(false);
+
+  const callbacksRef = useRef({ onFinish, onRevealStart, lightImpact });
+  useEffect(() => {
+    callbacksRef.current = { onFinish, onRevealStart, lightImpact };
+  }, [onFinish, onRevealStart, lightImpact]);
+
+  const stopAllSplashAnimations = () => {
+    activeAnimationRef.current?.stop();
+    activeAnimationRef.current = null;
+    skipAnimationRef.current?.stop();
+    skipAnimationRef.current = null;
+    overlayOpacity.stopAnimation();
+    overlayOpacity.removeAllListeners();
+    emblemScale.stopAnimation();
+    emblemScale.removeAllListeners();
+    emblemOpacity.stopAnimation();
+    emblemOpacity.removeAllListeners();
+    textOpacity.stopAnimation();
+    textOpacity.removeAllListeners();
+    textTranslateY.stopAnimation();
+    textTranslateY.removeAllListeners();
+    glowScale.stopAnimation();
+    glowScale.removeAllListeners();
+    glowOpacity.stopAnimation();
+    glowOpacity.removeAllListeners();
+  };
 
   useEffect(() => {
     const useNative = Platform.OS !== 'web';
@@ -213,21 +241,23 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
     // Subtle tactile haptic when brand lockup settles at 950ms
     const settleTimer = setTimeout(() => {
       if (!isCompletedRef.current) {
-        lightImpact();
+        callbacksRef.current.lightImpact();
       }
     }, 950);
 
     // Trigger Home dashboard subtle depth scale reveal at 1650ms
     const revealStartTimer = setTimeout(() => {
       if (!isCompletedRef.current) {
-        onRevealStart?.();
+        callbacksRef.current.onRevealStart?.();
       }
     }, 1650);
 
     masterTimeline.start(({ finished }) => {
       if (finished && !isCompletedRef.current) {
         isCompletedRef.current = true;
-        onFinish();
+        stopAllSplashAnimations();
+        setIsUnmounted(true);
+        callbacksRef.current.onFinish();
       }
     });
 
@@ -235,29 +265,33 @@ export const OpeningSplashScreen: React.FC<OpeningSplashScreenProps> = ({
       clearTimeout(settleTimer);
       clearTimeout(revealStartTimer);
       backSubscription.remove();
-      if (activeAnimationRef.current) {
-        activeAnimationRef.current.stop();
-      }
+      stopAllSplashAnimations();
     };
-  }, [lightImpact, onFinish, onRevealStart]);
+  }, []);
 
   // Allow tap-to-skip only after steady brand hold
   const handleSkip = () => {
     if (isCompletedRef.current) return;
     isCompletedRef.current = true;
-    onRevealStart?.();
-    if (activeAnimationRef.current) {
-      activeAnimationRef.current.stop();
-    }
-    Animated.timing(overlayOpacity, {
+    callbacksRef.current.onRevealStart?.();
+    activeAnimationRef.current?.stop();
+    const skipAnim = Animated.timing(overlayOpacity, {
       toValue: 0,
       duration: 180,
       easing: Easing.out(Easing.quad),
       useNativeDriver: Platform.OS !== 'web',
-    }).start(() => {
-      onFinish();
+    });
+    skipAnimationRef.current = skipAnim;
+    skipAnim.start(() => {
+      stopAllSplashAnimations();
+      setIsUnmounted(true);
+      callbacksRef.current.onFinish();
     });
   };
+
+  if (isUnmounted) {
+    return null;
+  }
 
   const emblemWidth = Math.min(SCREEN_WIDTH * 0.44, 176);
   const emblemHeight = emblemWidth * (310 / 400);

@@ -9,6 +9,11 @@ import {
 } from '../types/bill';
 import { BillSyncService } from '../services/sync/BillSyncService';
 import { useAuthStore } from './useAuthStore';
+import {
+  base64ToBlobUrl,
+  revokeBlobUrl,
+  sanitizeReceiptUrlForPersistence,
+} from '../utils/imageMemoryManager';
 
 interface BillStoreState {
   bills: BillSession[];
@@ -257,6 +262,10 @@ export const useBillStore = create<BillStoreState>()(
       return;
     }
     set((state) => {
+      const target = state.bills.find((b) => b.id === billId);
+      if (target?.receiptImageUrl) {
+        revokeBlobUrl(target.receiptImageUrl);
+      }
       const remaining = state.bills.filter((b) => b.id !== billId);
       const nextActiveId =
         state.activeBillId === billId
@@ -271,21 +280,32 @@ export const useBillStore = create<BillStoreState>()(
 
   updateBillMetadata: (billId, data) => {
     set((state) => ({
-      bills: state.bills.map((b) =>
-        b.id === billId
-          ? {
-              ...b,
-              restaurantName: data.restaurantName !== undefined ? data.restaurantName : b.restaurantName,
-              title: data.title !== undefined ? data.title : b.title,
-              receiptImageUrl: data.receiptImageUrl !== undefined ? data.receiptImageUrl : b.receiptImageUrl,
-              notes: data.notes !== undefined ? data.notes : b.notes,
-              currency: data.currency !== undefined ? data.currency : b.currency,
-              manualTotalAmount: data.manualTotalAmount !== undefined ? data.manualTotalAmount : b.manualTotalAmount,
-              splitMode: data.splitMode !== undefined ? data.splitMode : b.splitMode,
-              isManual: data.isManual !== undefined ? data.isManual : b.isManual,
-            }
-          : b
-      ),
+      bills: state.bills.map((b) => {
+        if (b.id !== billId) return b;
+        let nextReceiptUrl = b.receiptImageUrl;
+        if (data.receiptImageUrl !== undefined) {
+          const incomingUrl = data.receiptImageUrl
+            ? data.receiptImageUrl.startsWith('data:')
+              ? base64ToBlobUrl(data.receiptImageUrl)
+              : data.receiptImageUrl
+            : '';
+          if (b.receiptImageUrl && b.receiptImageUrl !== incomingUrl) {
+            revokeBlobUrl(b.receiptImageUrl);
+          }
+          nextReceiptUrl = incomingUrl || undefined;
+        }
+        return {
+          ...b,
+          restaurantName: data.restaurantName !== undefined ? data.restaurantName : b.restaurantName,
+          title: data.title !== undefined ? data.title : b.title,
+          receiptImageUrl: nextReceiptUrl,
+          notes: data.notes !== undefined ? data.notes : b.notes,
+          currency: data.currency !== undefined ? data.currency : b.currency,
+          manualTotalAmount: data.manualTotalAmount !== undefined ? data.manualTotalAmount : b.manualTotalAmount,
+          splitMode: data.splitMode !== undefined ? data.splitMode : b.splitMode,
+          isManual: data.isManual !== undefined ? data.isManual : b.isManual,
+        };
+      }),
     }));
     const updated = get().bills.find((b) => b.id === billId);
     if (updated) {
@@ -1521,10 +1541,16 @@ export const useBillStore = create<BillStoreState>()(
     {
       name: 'quota_bills_storage',
       storage: createJSONStorage(() => universalStorage),
-      partialize: (state) => ({ bills: state.bills, activeBillId: state.activeBillId }),
+      partialize: (state) => ({
+        bills: state.bills.slice(0, 25).map((b) => ({
+          ...b,
+          receiptImageUrl: sanitizeReceiptUrlForPersistence(b.receiptImageUrl),
+        })),
+        activeBillId: state.activeBillId,
+      }),
       onRehydrateStorage: () => (state) => {
         if (!state?.bills) return;
-        state.bills = state.bills.map((bill) => {
+        state.bills = state.bills.slice(0, 25).map((bill) => {
           let updatedHolder = bill.organizerAccountHolder;
           if (!updatedHolder || updatedHolder === 'Lorenzo De Angelis') {
             updatedHolder = 'Ilaria di Piu Bella in Mondo';
@@ -1548,6 +1574,7 @@ export const useBillStore = create<BillStoreState>()(
           });
           return {
             ...bill,
+            receiptImageUrl: sanitizeReceiptUrlForPersistence(bill.receiptImageUrl),
             splitMode: isScannedReceipt ? 'by_item' : bill.splitMode,
             manualTotalAmount: isScannedReceipt ? undefined : bill.manualTotalAmount,
             organizerAccountHolder: updatedHolder,
@@ -1558,35 +1585,3 @@ export const useBillStore = create<BillStoreState>()(
     }
   )
 );
-
-// Cross-device and cross-tab real-time sync via Supabase (Mobile App <-> Web Browser)
-// Note: We intentionally do NOT use window.addEventListener('storage') to overwrite bills across tabs
-// in the same browser because multiple guest tabs share localStorage and would ping-pong stale states.
-BillSyncService.subscribeToBillUpdates((cloudBill) => {
-  if (cloudBill && cloudBill.id) {
-    const existing = useBillStore.getState().bills.find((b) => b.id === cloudBill.id);
-    if (!existing) {
-      useBillStore.getState().upsertBill(cloudBill);
-      return;
-    }
-
-    // Do not downgrade local items if incoming snapshot has empty items
-    if (existing.items && existing.items.length > 0 && (!cloudBill.items || cloudBill.items.length === 0)) {
-      return;
-    }
-
-    // Always update if any participants, items, or status differ
-    const existingItemsJson = JSON.stringify(existing.items);
-    const cloudItemsJson = JSON.stringify(cloudBill.items);
-    const existingParticipantsJson = JSON.stringify(existing.participants);
-    const cloudParticipantsJson = JSON.stringify(cloudBill.participants);
-
-    if (
-      existing.status !== cloudBill.status ||
-      existingItemsJson !== cloudItemsJson ||
-      existingParticipantsJson !== cloudParticipantsJson
-    ) {
-      useBillStore.getState().upsertBill(cloudBill);
-    }
-  }
-});

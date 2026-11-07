@@ -101,6 +101,13 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
     }
 
     const pullFromCloud = async () => {
+      if (
+        Platform.OS === 'web' &&
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      ) {
+        return;
+      }
       try {
         const cloudBill = await BillSyncService.fetchBillFromCloud(targetId);
         if (cloudBill && isMounted) {
@@ -111,6 +118,20 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
 
     pullFromCloud();
     const interval = setInterval(pullFromCloud, 2500);
+
+    const handleVisibilityChange = () => {
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'visible' &&
+        isMounted
+      ) {
+        pullFromCloud();
+      }
+    };
+
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
 
     const unsubscribe = BillSyncService.subscribeToBillUpdates((updated) => {
       if (updated?.id === targetId && isMounted) {
@@ -138,6 +159,9 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
     return () => {
       isMounted = false;
       clearInterval(interval);
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
       unsubscribe();
       unsubscribeSplits();
     };

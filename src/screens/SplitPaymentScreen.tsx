@@ -47,6 +47,15 @@ export const SplitPaymentScreen: React.FC<SplitPaymentScreenProps> = ({
   const { isVisible: isAlertVisible } = useAlertStore();
   const { successNotification } = useHaptics();
   const [ibanCopied, setIbanCopied] = useState(false);
+  const ibanCopyTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (ibanCopyTimerRef.current) {
+        clearTimeout(ibanCopyTimerRef.current);
+      }
+    };
+  }, []);
   const {
     isProcessing,
     errorMessage,
@@ -123,7 +132,10 @@ export const SplitPaymentScreen: React.FC<SplitPaymentScreenProps> = ({
     successNotification();
     await Clipboard.setStringAsync(organizerIban);
     setIbanCopied(true);
-    setTimeout(() => setIbanCopied(false), 2400);
+    if (ibanCopyTimerRef.current) {
+      clearTimeout(ibanCopyTimerRef.current);
+    }
+    ibanCopyTimerRef.current = setTimeout(() => setIbanCopied(false), 2400);
   };
 
   const directRecipientSummary = `€${share.totalDue.toFixed(2)} → ${organizerHolderName} (${organizerBankName} • ${organizerIban.slice(0, 10)}...)`;

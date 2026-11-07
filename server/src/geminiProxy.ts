@@ -36,6 +36,9 @@ const LANGUAGE_NAMES: Record<string, string> = {
   fr: 'French',
 };
 
+const GEMINI_VISION_TIMEOUT_MS = 25000;
+const GEMINI_TRANSLATE_TIMEOUT_MS = 8000;
+
 export class ServerGeminiProxy {
   // Pre-seeded with gemini-3.8-flash so the hot path skips ListModels round-trip latency
   private static cachedWorkingModel: string | null = 'gemini-3.8-flash';
@@ -187,11 +190,25 @@ IMPORTANT EXTRACTION RULES:
         },
       };
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), GEMINI_VISION_TIMEOUT_MS);
+
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+      } catch (fetchErr: any) {
+        if (fetchErr?.name === 'AbortError') {
+          throw new Error(`[${cleanModel}] Gemini API request timed out after ${GEMINI_VISION_TIMEOUT_MS}ms.`);
+        }
+        throw fetchErr;
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!response.ok) {
         const errText = await response.text();
@@ -352,6 +369,9 @@ IMPORTANT EXTRACTION RULES:
       const cleanModel = model.replace(/^models\//, '').trim();
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${apiKey}`;
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), GEMINI_TRANSLATE_TIMEOUT_MS);
+
       try {
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -364,6 +384,7 @@ IMPORTANT EXTRACTION RULES:
               thinkingConfig: { thinkingBudget: 0 },
             },
           }),
+          signal: controller.signal,
         });
 
         if (!response.ok) continue;
@@ -389,6 +410,8 @@ IMPORTANT EXTRACTION RULES:
         }
       } catch {
         // try next model
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 

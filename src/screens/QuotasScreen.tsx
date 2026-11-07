@@ -1,12 +1,12 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
+  FlatList,
   TouchableOpacity,
   TextInput,
-  Image,
+  Platform,
 } from 'react-native';
 import { Search, Utensils, X, Receipt, Plus, Sparkles } from 'lucide-react-native';
 import { useThemeStore } from '../store/useThemeStore';
@@ -121,6 +121,27 @@ export const QuotasScreen: React.FC<QuotasScreenProps> = ({
 
   const settledCount = validBills.length - activeCount;
 
+  const renderBillItem = useCallback(
+    ({ item: bill }: { item: BillSession }) => (
+      <View style={styles.cardItemWrapper}>
+        <TableCard
+          bill={bill}
+          onPress={() => {
+            setActiveBill(bill.id);
+            onOpenBillDetails(bill.id);
+          }}
+          onLongPress={() => {
+            setSelectedBillForMenu(bill);
+            setIsMenuOpen(true);
+          }}
+        />
+      </View>
+    ),
+    [setActiveBill, onOpenBillDetails]
+  );
+
+  const keyExtractor = useCallback((item: BillSession) => item.id, []);
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Brand Header */}
@@ -129,148 +150,139 @@ export const QuotasScreen: React.FC<QuotasScreenProps> = ({
         subtitle={t('allQuotasSubtitle', { count: validBills.length })}
       />
 
-      <ScrollView
+      <FlatList
+        data={filteredBills}
+        keyExtractor={keyExtractor}
+        renderItem={renderBillItem}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-      >
-        {/* Search Bar */}
-        <View
-          style={[
-            styles.searchBar,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <Search size={18} color={colors.textSecondary} style={styles.searchIcon} />
-          <TextInput
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder={t('searchQuotasPlaceholder')}
-            placeholderTextColor={colors.textTertiary}
-            style={[styles.searchInput, { color: colors.textPrimary }]}
-            clearButtonMode="while-editing"
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}>
-              <X size={16} color={colors.textSecondary} />
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Samsung One UI Pill Filters */}
-        <View style={styles.filterRow}>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => {
-              lightImpact();
-              setFilterMode('all');
-            }}
-            style={[
-              styles.filterPill,
-              {
-                backgroundColor:
-                  filterMode === 'all' ? colors.accentLight : colors.surfaceElevated,
-                borderColor: filterMode === 'all' ? colors.accent : colors.border,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.filterPillText,
-                { color: filterMode === 'all' ? colors.accent : colors.textSecondary },
-              ]}
-            >
-              {t('filterAllQuotas')} ({validBills.length})
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => {
-              lightImpact();
-              setFilterMode('active');
-            }}
-            style={[
-              styles.filterPill,
-              {
-                backgroundColor:
-                  filterMode === 'active' ? colors.accentLight : colors.surfaceElevated,
-                borderColor: filterMode === 'active' ? colors.accent : colors.border,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.filterPillText,
-                { color: filterMode === 'active' ? colors.accent : colors.textSecondary },
-              ]}
-            >
-              {t('filterActiveQuotas')} ({activeCount})
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => {
-              lightImpact();
-              setFilterMode('settled');
-            }}
-            style={[
-              styles.filterPill,
-              {
-                backgroundColor:
-                  filterMode === 'settled' ? colors.accentLight : colors.surfaceElevated,
-                borderColor: filterMode === 'settled' ? colors.accent : colors.border,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.filterPillText,
-                { color: filterMode === 'settled' ? colors.accent : colors.textSecondary },
-              ]}
-            >
-              {t('filterSettledQuotas')} ({settledCount})
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Receipts List */}
-        <View style={styles.receiptListContainer}>
-          {filteredBills.length === 0 ? (
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={5}
+        removeClippedSubviews={Platform.OS !== 'web'}
+        ListHeaderComponent={
+          <>
+            {/* Search Bar */}
             <View
               style={[
-                styles.emptyBox,
-                { backgroundColor: colors.surfaceElevated, borderColor: colors.borderSubtle },
+                styles.searchBar,
+                { backgroundColor: colors.surface, borderColor: colors.border },
               ]}
             >
-              <View style={[styles.emptyIconCircle, { backgroundColor: colors.accentLight }]}>
-                <Receipt size={28} color={colors.accent} />
-              </View>
-              <Text style={[styles.emptyTitle, { color: colors.textPrimary }]}>
-                {t('noQuotasFound')}
-              </Text>
-              <Text style={[styles.emptyDesc, { color: colors.textSecondary }]}>
-                {t('noQuotasFoundDesc')}
-              </Text>
-            </View>
-          ) : (
-            filteredBills.map((bill) => (
-              <TableCard
-                key={bill.id}
-                bill={bill}
-                onPress={() => {
-                  setActiveBill(bill.id);
-                  onOpenBillDetails(bill.id);
-                }}
-                onLongPress={() => {
-                  setSelectedBillForMenu(bill);
-                  setIsMenuOpen(true);
-                }}
+              <Search size={18} color={colors.textSecondary} style={styles.searchIcon} />
+              <TextInput
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder={t('searchQuotasPlaceholder')}
+                placeholderTextColor={colors.textTertiary}
+                style={[styles.searchInput, { color: colors.textPrimary }]}
+                clearButtonMode="while-editing"
               />
-            ))
-          )}
-        </View>
-      </ScrollView>
+              {searchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}>
+                  <X size={16} color={colors.textSecondary} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Samsung One UI Pill Filters */}
+            <View style={styles.filterRow}>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => {
+                  lightImpact();
+                  setFilterMode('all');
+                }}
+                style={[
+                  styles.filterPill,
+                  {
+                    backgroundColor:
+                      filterMode === 'all' ? colors.accentLight : colors.surfaceElevated,
+                    borderColor: filterMode === 'all' ? colors.accent : colors.border,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.filterPillText,
+                    { color: filterMode === 'all' ? colors.accent : colors.textSecondary },
+                  ]}
+                >
+                  {t('filterAllQuotas')} ({validBills.length})
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => {
+                  lightImpact();
+                  setFilterMode('active');
+                }}
+                style={[
+                  styles.filterPill,
+                  {
+                    backgroundColor:
+                      filterMode === 'active' ? colors.accentLight : colors.surfaceElevated,
+                    borderColor: filterMode === 'active' ? colors.accent : colors.border,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.filterPillText,
+                    { color: filterMode === 'active' ? colors.accent : colors.textSecondary },
+                  ]}
+                >
+                  {t('filterActiveQuotas')} ({activeCount})
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => {
+                  lightImpact();
+                  setFilterMode('settled');
+                }}
+                style={[
+                  styles.filterPill,
+                  {
+                    backgroundColor:
+                      filterMode === 'settled' ? colors.accentLight : colors.surfaceElevated,
+                    borderColor: filterMode === 'settled' ? colors.accent : colors.border,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.filterPillText,
+                    { color: filterMode === 'settled' ? colors.accent : colors.textSecondary },
+                  ]}
+                >
+                  {t('filterSettledQuotas')} ({settledCount})
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        }
+        ListEmptyComponent={
+          <View
+            style={[
+              styles.emptyBox,
+              { backgroundColor: colors.surfaceElevated, borderColor: colors.borderSubtle },
+            ]}
+          >
+            <View style={[styles.emptyIconCircle, { backgroundColor: colors.accentLight }]}>
+              <Receipt size={28} color={colors.accent} />
+            </View>
+            <Text style={[styles.emptyTitle, { color: colors.textPrimary }]}>
+              {t('noQuotasFound')}
+            </Text>
+            <Text style={[styles.emptyDesc, { color: colors.textSecondary }]}>
+              {t('noQuotasFoundDesc')}
+            </Text>
+          </View>
+        }
+      />
 
       {/* Floating Context Menu */}
       <ReceiptContextMenuModal
@@ -354,6 +366,9 @@ const styles = StyleSheet.create({
   },
   receiptListContainer: {
     gap: SPACING.sm,
+  },
+  cardItemWrapper: {
+    marginBottom: SPACING.sm,
   },
   emptyBox: {
     padding: SPACING.xl,

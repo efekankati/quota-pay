@@ -1,6 +1,8 @@
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as zlib from 'zlib';
+import { pipeline } from 'stream';
 import { ServerGeminiProxy } from './geminiProxy';
 import { SupabaseTokenLedger } from './supabaseLedger';
 
@@ -46,6 +48,8 @@ loadDotEnv();
 
 const PORT = Number(process.env.PORT || 3000);
 const SERVER_START_MS = Date.now();
+export const MAX_RECEIPT_BODY_BYTES = 10 * 1024 * 1024; // Strict 10MB payload limit
+const MAX_TRANSLATE_BODY_BYTES = 64 * 1024; // 64KB limit for UI string translation
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -65,10 +69,44 @@ const MIME_TYPES: Record<string, string> = {
   '.map': 'application/json',
 };
 
+const COMPRESSIBLE_EXTENSIONS = new Set([
+  '.html',
+  '.js',
+  '.mjs',
+  '.css',
+  '.json',
+  '.svg',
+]);
+
+const IMMUTABLE_ASSET_EXTENSIONS = new Set([
+  '.js',
+  '.mjs',
+  '.css',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.svg',
+  '.ico',
+]);
+
+class PayloadTooLargeError extends Error {
+  public readonly statusCode = 413;
+  constructor(maxBytes: number) {
+    super(`Request payload too large (max ${Math.round(maxBytes / (1024 * 1024))}MB).`);
+    this.name = 'PayloadTooLargeError';
+  }
+}
+
 function sendJson(res: http.ServerResponse, statusCode: number, payload: unknown) {
+  if (res.headersSent) return;
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
@@ -76,26 +114,139 @@ function sendJson(res: http.ServerResponse, statusCode: number, payload: unknown
   res.end(body);
 }
 
-function readRequestBody(req: http.IncomingMessage, maxBytes = 15 * 1024 * 1024): Promise<string> {
+function readRequestBody(
+  req: http.IncomingMessage,
+  maxBytes = MAX_RECEIPT_BODY_BYTES,
+  timeoutMs = 15000
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
+    const declaredLength = Number(req.headers['content-length'] || 0);
+    if (declaredLength > maxBytes) {
+      req.resume();
+      reject(new PayloadTooLargeError(maxBytes));
+      return;
+    }
+
+    let chunks: Buffer[] = [];
     let total = 0;
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      chunks = [];
+      req.destroy();
+      reject(new Error('Request body read timed out.'));
+    }, timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+    };
 
     req.on('data', (chunk: Buffer) => {
+      if (settled) return;
       total += chunk.length;
       if (total > maxBytes) {
+        settled = true;
+        cleanup();
+        chunks = [];
         req.destroy();
-        reject(new Error('Request payload too large (max 15MB).'));
+        reject(new PayloadTooLargeError(maxBytes));
         return;
       }
       chunks.push(chunk);
     });
 
     req.on('end', () => {
-      resolve(Buffer.concat(chunks).toString('utf-8'));
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const combined = Buffer.concat(chunks, total).toString('utf-8');
+      chunks = [];
+      resolve(combined);
     });
 
-    req.on('error', (err: Error) => reject(err));
+    req.on('error', (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      chunks = [];
+      reject(err);
+    });
+  });
+}
+
+function streamStaticFile(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  filePath: string,
+  pathname: string,
+  isSpaFallback: boolean
+) {
+  const ext = path.extname(filePath).toLowerCase();
+  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+  const isImmutableAsset =
+    !isSpaFallback &&
+    ext !== '.html' &&
+    (pathname.startsWith('/_expo/static/') ||
+      pathname.startsWith('/assets/') ||
+      IMMUTABLE_ASSET_EXTENSIONS.has(ext));
+
+  const cacheControl = isImmutableAsset
+    ? 'public, max-age=31536000, immutable'
+    : 'no-cache, no-store, must-revalidate';
+
+  const headers: Record<string, string> = {
+    'Content-Type': contentType,
+    'Cache-Control': cacheControl,
+    'X-Content-Type-Options': 'nosniff',
+    Vary: 'Accept-Encoding',
+  };
+
+  if (req.method === 'HEAD') {
+    res.writeHead(200, headers);
+    res.end();
+    return;
+  }
+
+  const acceptEncoding = String(req.headers['accept-encoding'] || '');
+  const shouldCompress = COMPRESSIBLE_EXTENSIONS.has(ext);
+  const rawStream = fs.createReadStream(filePath);
+
+  if (shouldCompress && /\bbr\b/.test(acceptEncoding)) {
+    headers['Content-Encoding'] = 'br';
+    res.writeHead(200, headers);
+    const brotli = zlib.createBrotliCompress({
+      params: {
+        [zlib.constants.BROTLI_PARAM_QUALITY]: 4,
+      },
+    });
+    pipeline(rawStream, brotli, res, (err: Error | null) => {
+      if (err && !res.headersSent) {
+        res.destroy();
+      }
+    });
+    return;
+  }
+
+  if (shouldCompress && /\bgzip\b/.test(acceptEncoding)) {
+    headers['Content-Encoding'] = 'gzip';
+    res.writeHead(200, headers);
+    const gzip = zlib.createGzip({ level: zlib.constants.Z_BEST_SPEED });
+    pipeline(rawStream, gzip, res, (err: Error | null) => {
+      if (err && !res.headersSent) {
+        res.destroy();
+      }
+    });
+    return;
+  }
+
+  res.writeHead(200, headers);
+  pipeline(rawStream, res, (err: Error | null) => {
+    if (err && !res.headersSent) {
+      res.destroy();
+    }
   });
 }
 
@@ -141,12 +292,15 @@ export function createQuotaServer() {
         const uptimeHours = (Date.now() - SERVER_START_MS) / (1000 * 3600);
         const spotHourlyRate = Number(process.env.SPOT_HOURLY_RATE_USD || 0.005);
         const computeCostUsd = Number((uptimeHours * spotHourlyRate).toFixed(6));
+        const memUsage = process.memoryUsage();
 
         sendJson(res, 200, {
           status: 'ok',
           service: 'quota-pay-backend',
           region: process.env.AWS_REGION || 'eu-south-1',
           uptimeSeconds: Math.round((Date.now() - SERVER_START_MS) / 1000),
+          memoryRssMb: Math.round((memUsage.rss / (1024 * 1024)) * 10) / 10,
+          heapUsedMb: Math.round((memUsage.heapUsed / (1024 * 1024)) * 10) / 10,
           computeCostUsd,
           ledger,
         });
@@ -174,10 +328,13 @@ export function createQuotaServer() {
           return;
         }
 
-        const rawBody = await readRequestBody(req);
-        const body = JSON.parse(rawBody || '{}');
-        const base64Data = String(body.base64Data || body.image || '');
+        let rawBody: string | null = await readRequestBody(req, MAX_RECEIPT_BODY_BYTES);
+        let body: any = JSON.parse(rawBody || '{}');
+        rawBody = null; // Release raw string buffer early for GC
+
+        let base64Data: string | null = String(body.base64Data || body.image || '');
         const mimeType = String(body.mimeType || 'image/jpeg');
+        body = null;
 
         if (!base64Data) {
           sendJson(res, 400, { error: 'Missing required base64Data receipt image payload.' });
@@ -188,6 +345,7 @@ export function createQuotaServer() {
           base64Data,
           mimeType
         );
+        base64Data = null; // Allow GC to reclaim base64 payload immediately
 
         // Atomically record tokens & cost (0ms in-memory + background Supabase RPC sync)
         const { budgetExceeded, ledger } = await SupabaseTokenLedger.recordGeminiTokens(
@@ -229,7 +387,7 @@ export function createQuotaServer() {
           return;
         }
 
-        const rawBody = await readRequestBody(req);
+        const rawBody = await readRequestBody(req, MAX_TRANSLATE_BODY_BYTES);
         const body = JSON.parse(rawBody || '{}');
         const text = String(body.text || '');
         const targetLang = String(body.targetLang || 'en');
@@ -271,6 +429,12 @@ export function createQuotaServer() {
 
       // 5. Static Web Application Serving (with SPA Deep-Link Routing)
       if (method === 'GET' || method === 'HEAD') {
+        // Never serve source maps in production
+        if (pathname.endsWith('.map') && process.env.NODE_ENV === 'production') {
+          sendJson(res, 404, { error: 'Source maps are disabled in production.' });
+          return;
+        }
+
         const safePath = path.normalize(pathname).replace(/^(\.\.(\/|\\|$))+/, '');
         let targetFile = path.join(staticRoot, safePath);
 
@@ -279,26 +443,14 @@ export function createQuotaServer() {
         }
 
         if (fs.existsSync(targetFile) && fs.statSync(targetFile).isFile()) {
-          const ext = path.extname(targetFile).toLowerCase();
-          const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-          res.writeHead(200, { 'Content-Type': contentType });
-          if (method === 'HEAD') {
-            res.end();
-          } else {
-            fs.createReadStream(targetFile).pipe(res);
-          }
+          streamStaticFile(req, res, targetFile, pathname, false);
           return;
         }
 
         // SPA fallback to index.html for client-side routes (/bill/*, /pay/*, etc.)
         const indexHtml = path.join(staticRoot, 'index.html');
         if (fs.existsSync(indexHtml)) {
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-          if (method === 'HEAD') {
-            res.end();
-          } else {
-            fs.createReadStream(indexHtml).pipe(res);
-          }
+          streamStaticFile(req, res, indexHtml, pathname, true);
           return;
         }
 
@@ -317,12 +469,23 @@ export function createQuotaServer() {
 
       sendJson(res, 404, { error: 'Not Found' });
     } catch (err: any) {
+      if (err instanceof PayloadTooLargeError || err?.statusCode === 413) {
+        sendJson(res, 413, {
+          error: err.message || 'Payload Too Large (max 10MB).',
+        });
+        return;
+      }
       console.error('[QuotaPayServer] Request error:', err);
       sendJson(res, 500, {
         error: err?.message || 'Internal Server Error',
       });
     }
   });
+
+  // Prevent dangling sockets and slowloris connection leaks
+  server.keepAliveTimeout = 30000;
+  server.headersTimeout = 35000;
+  server.requestTimeout = 30000;
 
   return server;
 }

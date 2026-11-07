@@ -104,15 +104,39 @@ export const GuestClaimScreen: React.FC<GuestClaimScreenProps> = ({
       }
     });
 
-    // 3. Heartbeat polling every 2.5 seconds to guarantee living status across ~10+ concurrent guests
+    // 3. Heartbeat polling every 2.5 seconds (pauses when tab is hidden in background to save memory & CPU)
     const interval = setInterval(() => {
+      if (
+        Platform.OS === 'web' &&
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      ) {
+        return;
+      }
       syncLiveBill(false);
     }, 2500);
+
+    const handleVisibilityChange = () => {
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'visible' &&
+        isMounted
+      ) {
+        syncLiveBill(false);
+      }
+    };
+
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
 
     return () => {
       isMounted = false;
       unsubscribe();
       clearInterval(interval);
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
     };
   }, [billId, upsertBill]);
 

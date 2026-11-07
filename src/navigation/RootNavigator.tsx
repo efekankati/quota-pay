@@ -98,7 +98,7 @@ export const RootNavigator: React.FC = () => {
     initialUrlInfo?.claimId || savedGuestTabSession.participantId || 'user_me'
   );
 
-  // Fetch deep-linked living bill from Supabase cloud on mount
+  // Fetch deep-linked living bill from Supabase cloud on mount & subscribe with strict cleanup
   useEffect(() => {
     const targetBillId = initialUrlInfo?.billId || activeBillId;
     let isMounted = true;
@@ -125,8 +125,26 @@ export const RootNavigator: React.FC = () => {
         .catch(() => {});
     }
 
+    const unsubscribeRealtime = BillSyncService.subscribeToBillUpdates((cloudBill) => {
+      if (!isMounted || !cloudBill || !cloudBill.id) return;
+      const existing = useBillStore.getState().bills.find((b) => b.id === cloudBill.id);
+      if (!existing) {
+        useBillStore.getState().upsertBill(cloudBill);
+        return;
+      }
+      if (
+        existing.items &&
+        existing.items.length > 0 &&
+        (!cloudBill.items || cloudBill.items.length === 0)
+      ) {
+        return;
+      }
+      useBillStore.getState().upsertBill(cloudBill);
+    });
+
     return () => {
       isMounted = false;
+      unsubscribeRealtime();
     };
   }, [initialUrlInfo?.billId, initialUrlInfo?.claimId, activeBillId]);
 

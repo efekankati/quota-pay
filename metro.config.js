@@ -6,6 +6,25 @@ const config = getDefaultConfig(__dirname);
 
 config.resolver.sourceExts = [...new Set([...config.resolver.sourceExts, 'mjs', 'cjs'])];
 
+// Production bundle optimization: strip console logs, debugger statements, and comments
+if (process.env.NODE_ENV === 'production') {
+  config.transformer = {
+    ...config.transformer,
+    minifierConfig: {
+      ...config.transformer?.minifierConfig,
+      compress: {
+        ...(config.transformer?.minifierConfig?.compress || {}),
+        drop_console: true,
+        drop_debugger: true,
+      },
+      output: {
+        ...(config.transformer?.minifierConfig?.output || {}),
+        comments: false,
+      },
+    },
+  };
+}
+
 // Middleware to serve Stripe Apple Pay domain verification token on tunnel/web
 config.server = {
   ...config.server,

@@ -3,11 +3,10 @@ import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
+  FlatList,
   TextInput,
   TouchableOpacity,
   Modal,
-  Image,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
@@ -190,236 +189,242 @@ export const BillVerificationScreen: React.FC<BillVerificationScreenProps> = ({
         onBack={onBack}
       />
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Verification Stage Banner */}
-        <View
-          style={[
-            styles.bannerCard,
-            { backgroundColor: colors.surfaceElevated, borderColor: colors.border },
-          ]}
-        >
-          <View style={styles.bannerHeaderRow}>
-            <View style={[styles.bannerIconBox, { backgroundColor: colors.accentLight }]}>
-              <CheckCheck size={18} color={colors.accent} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.bannerTitle, { color: colors.textPrimary }]}>
-                {t('verificationBannerTitle')}
-              </Text>
-              <Text style={[styles.bannerDesc, { color: colors.textSecondary }]}>
-                {t('verificationBannerDesc')}
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Live Calculation Overview Card */}
-        <View
-          style={[
-            styles.overviewCard,
-            SHADOWS.card,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <View style={styles.overviewTopRow}>
-            <View>
-              <Text style={[styles.overviewSublabel, { color: colors.textSecondary }]}>
-                {t('verifiedTotals')}
-              </Text>
-              <Text style={[styles.overviewGrandTotal, { color: colors.accent }]}>
-                €{bill.taxSummary.grandTotal.toFixed(2)}
-              </Text>
-            </View>
-
-            <View style={[styles.badgePill, { backgroundColor: colors.accentLight }]}>
-              <Sparkles size={14} color={colors.accent} />
-              <Text style={[styles.badgePillText, { color: colors.accent }]}>
-                {t('itemsCount', { count: bill.items.length })}
-              </Text>
-            </View>
-          </View>
-
-          {/* Sub-breakdown metrics */}
-          <View style={[styles.metricsGrid, { borderTopColor: colors.borderSubtle }]}>
-            <View style={styles.metricItem}>
-              <Text style={[styles.metricLabel, { color: colors.textTertiary }]}>{t('subtotal').toUpperCase()}</Text>
-              <Text style={[styles.metricVal, { color: colors.textPrimary }]} numberOfLines={1}>
-                €{bill.taxSummary.subtotal.toFixed(2)}
-              </Text>
-            </View>
-
-            <View style={styles.metricItem}>
-              <Text style={[styles.metricLabel, { color: colors.textTertiary }]}>{t('coperto').toUpperCase()}</Text>
-              <Text style={[styles.metricVal, { color: colors.textPrimary }]} numberOfLines={1}>
-                €{bill.taxSummary.copertoTotal.toFixed(2)}
-              </Text>
-            </View>
-
-            <View style={styles.metricItem}>
-              <Text style={[styles.metricLabel, { color: colors.textTertiary }]}>{t('vat')}</Text>
-              <Text style={[styles.metricVal, { color: colors.textPrimary }]} numberOfLines={1}>
-                €{bill.taxSummary.totalVat.toFixed(2)}
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Section Heading & Add Button */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
-            {t('recognizedItemsHeading', { count: bill.items.length })}
-          </Text>
-
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => {
-              lightImpact();
-              setIsAddModalOpen(true);
-            }}
-            style={[
-              styles.addItemBtn,
-              { backgroundColor: colors.accentLight, borderColor: colors.accent },
-            ]}
-          >
-            <PlusCircle size={15} color={colors.accent} />
-            <Text style={[styles.addItemBtnText, { color: colors.accent }]}>
-              {t('addItemModalTitle')}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Line Items List */}
-        <View style={styles.itemsList}>
-          {bill.items.map((item, idx) => (
+      <FlatList
+        data={bill.items}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={styles.scrollContent}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={5}
+        removeClippedSubviews={Platform.OS !== 'web'}
+        ListHeaderComponent={
+          <>
+            {/* Verification Stage Banner */}
             <View
-              key={item.id}
               style={[
-                styles.itemRowCard,
-                {
-                  backgroundColor: item.isCoperto
-                    ? 'rgba(16, 185, 129, 0.05)'
-                    : colors.surface,
-                  borderColor: item.isCoperto
-                    ? 'rgba(16, 185, 129, 0.25)'
-                    : colors.border,
-                },
+                styles.bannerCard,
+                { backgroundColor: colors.surfaceElevated, borderColor: colors.border },
               ]}
             >
-              <View style={styles.itemMainInfo}>
-                <View style={styles.itemNameRow}>
-                  <Text style={[styles.itemNameText, { color: colors.textPrimary }]}>
-                    {item.name}
+              <View style={styles.bannerHeaderRow}>
+                <View style={[styles.bannerIconBox, { backgroundColor: colors.accentLight }]}>
+                  <CheckCheck size={18} color={colors.accent} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.bannerTitle, { color: colors.textPrimary }]}>
+                    {t('verificationBannerTitle')}
                   </Text>
-                  {item.isCoperto && (
-                    <View style={styles.copertoTag}>
-                      <Text style={styles.copertoTagText}>{t('coperto')}</Text>
-                    </View>
-                  )}
+                  <Text style={[styles.bannerDesc, { color: colors.textSecondary }]}>
+                    {t('verificationBannerDesc')}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Live Calculation Overview Card */}
+            <View
+              style={[
+                styles.overviewCard,
+                SHADOWS.card,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+            >
+              <View style={styles.overviewTopRow}>
+                <View>
+                  <Text style={[styles.overviewSublabel, { color: colors.textSecondary }]}>
+                    {t('verifiedTotals')}
+                  </Text>
+                  <Text style={[styles.overviewGrandTotal, { color: colors.accent }]}>
+                    €{bill.taxSummary.grandTotal.toFixed(2)}
+                  </Text>
                 </View>
 
-                <Text style={[styles.itemSubText, { color: colors.textTertiary }]} numberOfLines={1}>
-                  {item.quantity}x • €{item.unitPrice.toFixed(2)} {t('eachUnit')}
-                </Text>
+                <View style={[styles.badgePill, { backgroundColor: colors.accentLight }]}>
+                  <Sparkles size={14} color={colors.accent} />
+                  <Text style={[styles.badgePillText, { color: colors.accent }]}>
+                    {t('itemsCount', { count: bill.items.length })}
+                  </Text>
+                </View>
               </View>
 
-              {/* Quantity Stepper & Price */}
-              <View style={styles.itemActionCol}>
-                <Text style={[styles.itemTotalPriceText, { color: colors.textPrimary }]} numberOfLines={1}>
-                  €{item.totalPrice.toFixed(2)}
+              {/* Sub-breakdown metrics */}
+              <View style={[styles.metricsGrid, { borderTopColor: colors.borderSubtle }]}>
+                <View style={styles.metricItem}>
+                  <Text style={[styles.metricLabel, { color: colors.textTertiary }]}>{t('subtotal').toUpperCase()}</Text>
+                  <Text style={[styles.metricVal, { color: colors.textPrimary }]} numberOfLines={1}>
+                    €{bill.taxSummary.subtotal.toFixed(2)}
+                  </Text>
+                </View>
+
+                <View style={styles.metricItem}>
+                  <Text style={[styles.metricLabel, { color: colors.textTertiary }]}>{t('coperto').toUpperCase()}</Text>
+                  <Text style={[styles.metricVal, { color: colors.textPrimary }]} numberOfLines={1}>
+                    €{bill.taxSummary.copertoTotal.toFixed(2)}
+                  </Text>
+                </View>
+
+                <View style={styles.metricItem}>
+                  <Text style={[styles.metricLabel, { color: colors.textTertiary }]}>{t('vat')}</Text>
+                  <Text style={[styles.metricVal, { color: colors.textPrimary }]} numberOfLines={1}>
+                    €{bill.taxSummary.totalVat.toFixed(2)}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Section Heading & Add Button */}
+            <View style={styles.sectionHeaderRow}>
+              <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
+                {t('recognizedItemsHeading', { count: bill.items.length })}
+              </Text>
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => {
+                  lightImpact();
+                  setIsAddModalOpen(true);
+                }}
+                style={[
+                  styles.addItemBtn,
+                  { backgroundColor: colors.accentLight, borderColor: colors.accent },
+                ]}
+              >
+                <PlusCircle size={15} color={colors.accent} />
+                <Text style={[styles.addItemBtnText, { color: colors.accent }]}>
+                  {t('addItemModalTitle')}
                 </Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        }
+        renderItem={({ item }) => (
+          <View
+            style={[
+              styles.itemRowCard,
+              {
+                marginBottom: SPACING.sm,
+                backgroundColor: item.isCoperto
+                  ? 'rgba(16, 185, 129, 0.05)'
+                  : colors.surface,
+                borderColor: item.isCoperto
+                  ? 'rgba(16, 185, 129, 0.25)'
+                  : colors.border,
+              },
+            ]}
+          >
+            <View style={styles.itemMainInfo}>
+              <View style={styles.itemNameRow}>
+                <Text style={[styles.itemNameText, { color: colors.textPrimary }]}>
+                  {item.name}
+                </Text>
+                {item.isCoperto && (
+                  <View style={styles.copertoTag}>
+                    <Text style={styles.copertoTagText}>{t('coperto')}</Text>
+                  </View>
+                )}
+              </View>
 
-                <View style={styles.itemControlsRow}>
-                  {/* Stepper */}
-                  <View style={styles.miniStepper}>
-                    <TouchableOpacity
-                      onPress={() => {
-                        if (item.quantity > 1) {
-                          lightImpact();
-                          updateLineItem(bill.id, item.id, {
-                            quantity: item.quantity - 1,
-                            totalPrice: Math.round((item.quantity - 1) * item.unitPrice * 100) / 100,
-                          });
-                        }
-                      }}
-                      disabled={item.quantity <= 1}
-                      style={[
-                        styles.miniStepperBtn,
-                        {
-                          backgroundColor: colors.surfaceElevated,
-                          borderColor: colors.borderSubtle,
-                          opacity: item.quantity <= 1 ? 0.3 : 1,
-                        },
-                      ]}
-                    >
-                      <Minus size={12} color={colors.textPrimary} />
-                    </TouchableOpacity>
+              <Text style={[styles.itemSubText, { color: colors.textTertiary }]} numberOfLines={1}>
+                {item.quantity}x • €{item.unitPrice.toFixed(2)} {t('eachUnit')}
+              </Text>
+            </View>
 
-                    <Text style={[styles.miniStepperText, { color: colors.textPrimary }]}>
-                      {item.quantity}
-                    </Text>
+            {/* Quantity Stepper & Price */}
+            <View style={styles.itemActionCol}>
+              <Text style={[styles.itemTotalPriceText, { color: colors.textPrimary }]} numberOfLines={1}>
+                €{item.totalPrice.toFixed(2)}
+              </Text>
 
-                    <TouchableOpacity
-                      onPress={() => {
+              <View style={styles.itemControlsRow}>
+                {/* Stepper */}
+                <View style={styles.miniStepper}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (item.quantity > 1) {
                         lightImpact();
                         updateLineItem(bill.id, item.id, {
-                          quantity: item.quantity + 1,
-                          totalPrice: Math.round((item.quantity + 1) * item.unitPrice * 100) / 100,
+                          quantity: item.quantity - 1,
+                          totalPrice: Math.round((item.quantity - 1) * item.unitPrice * 100) / 100,
                         });
-                      }}
-                      style={[
-                        styles.miniStepperBtn,
-                        {
-                          backgroundColor: colors.surfaceElevated,
-                          borderColor: colors.borderSubtle,
-                        },
-                      ]}
-                    >
-                      <Plus size={12} color={colors.textPrimary} />
-                    </TouchableOpacity>
-                  </View>
-
-                  {/* Edit Pencil */}
-                  <TouchableOpacity
-                    onPress={() => handleOpenEdit(item)}
+                      }
+                    }}
+                    disabled={item.quantity <= 1}
                     style={[
-                      styles.iconActionBtn,
+                      styles.miniStepperBtn,
+                      {
+                        backgroundColor: colors.surfaceElevated,
+                        borderColor: colors.borderSubtle,
+                        opacity: item.quantity <= 1 ? 0.3 : 1,
+                      },
+                    ]}
+                  >
+                    <Minus size={12} color={colors.textPrimary} />
+                  </TouchableOpacity>
+
+                  <Text style={[styles.miniStepperText, { color: colors.textPrimary }]}>
+                    {item.quantity}
+                  </Text>
+
+                  <TouchableOpacity
+                    onPress={() => {
+                      lightImpact();
+                      updateLineItem(bill.id, item.id, {
+                        quantity: item.quantity + 1,
+                        totalPrice: Math.round((item.quantity + 1) * item.unitPrice * 100) / 100,
+                      });
+                    }}
+                    style={[
+                      styles.miniStepperBtn,
                       {
                         backgroundColor: colors.surfaceElevated,
                         borderColor: colors.borderSubtle,
                       },
                     ]}
                   >
-                    <Pencil size={13} color={colors.accent} />
-                  </TouchableOpacity>
-
-                  {/* Delete Trash */}
-                  <TouchableOpacity
-                    onPress={() => handleDeleteItem(item)}
-                    style={[
-                      styles.iconActionBtn,
-                      {
-                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                        borderColor: 'rgba(239, 68, 68, 0.3)',
-                      },
-                    ]}
-                  >
-                    <Trash2 size={13} color="#EF4444" />
+                    <Plus size={12} color={colors.textPrimary} />
                   </TouchableOpacity>
                 </View>
+
+                {/* Edit Pencil */}
+                <TouchableOpacity
+                  onPress={() => handleOpenEdit(item)}
+                  style={[
+                    styles.iconActionBtn,
+                    {
+                      backgroundColor: colors.surfaceElevated,
+                      borderColor: colors.borderSubtle,
+                    },
+                  ]}
+                >
+                  <Pencil size={13} color={colors.accent} />
+                </TouchableOpacity>
+
+                {/* Delete Trash */}
+                <TouchableOpacity
+                  onPress={() => handleDeleteItem(item)}
+                  style={[
+                    styles.iconActionBtn,
+                    {
+                      backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                      borderColor: 'rgba(239, 68, 68, 0.3)',
+                    },
+                  ]}
+                >
+                  <Trash2 size={13} color="#EF4444" />
+                </TouchableOpacity>
               </View>
             </View>
-          ))}
-
-          {bill.items.length === 0 && (
-            <View style={styles.emptyItemsBox}>
-              <UtensilsCrossed size={36} color={colors.textTertiary} />
-              <Text style={[styles.emptyItemsText, { color: colors.textSecondary }]}>
-                {t('noItemsInReceipt')}
-              </Text>
-            </View>
-          )}
-        </View>
-      </ScrollView>
+          </View>
+        )}
+        ListEmptyComponent={
+          <View style={styles.emptyItemsBox}>
+            <UtensilsCrossed size={36} color={colors.textTertiary} />
+            <Text style={[styles.emptyItemsText, { color: colors.textSecondary }]}>
+              {t('noItemsInReceipt')}
+            </Text>
+          </View>
+        }
+      />
 
       {/* Floating Bottom Acceptance Bar */}
       <View
