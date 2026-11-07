@@ -69,7 +69,7 @@ export const RootNavigator: React.FC = () => {
   );
 
   const [isGuestSession, setIsGuestSession] = useState<boolean>(() =>
-    Boolean(initialUrlInfo?.isGuest || initialUrlInfo?.billId || initialUrlInfo?.claimId)
+    Boolean(initialUrlInfo?.isGuest)
   );
 
   const [currentScreen, setCurrentScreen] = useState<ScreenType>(() => {
@@ -85,7 +85,7 @@ export const RootNavigator: React.FC = () => {
         }
         return 'guest_claim';
       }
-      return 'itemizer';
+      return 'summary';
     }
     return isAuthenticated ? 'home' : 'onboarding';
   });
