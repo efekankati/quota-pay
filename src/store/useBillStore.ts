@@ -137,6 +137,9 @@ export const useBillStore = create<BillStoreState>()(
   createBill: (title, restaurantName, organizer, options) => {
     const newId = `bill_${Date.now()}`;
     const organizerSplitId = organizer.splitId || `split_${newId}_${organizer.id}`;
+    const initialItems = options?.initialItems || [];
+    const isScannedReceipt = initialItems.length > 0;
+
     const initialAmount =
       options?.initialAmount && options.initialAmount > 0
         ? Math.round(options.initialAmount * 100) / 100
@@ -144,17 +147,17 @@ export const useBillStore = create<BillStoreState>()(
     const totalSeats = 1 + (options?.initialParticipants?.length || 0);
     const totalCents = Math.round(initialAmount * 100);
     const organizerShareCents =
-      totalSeats > 0 && totalCents > 0
+      !isScannedReceipt && totalSeats > 0 && totalCents > 0
         ? Math.floor(totalCents / totalSeats) + (totalCents % totalSeats > 0 ? 1 : 0)
         : 0;
 
     const organizerParticipant: Participant = {
       ...organizer,
       isOrganizer: true,
-      status: 'paid',
+      status: isScannedReceipt ? 'pending' : 'paid',
       paymentMethod: organizer.paymentMethod || 'card',
-      paidAt: organizer.paidAt || new Date().toISOString(),
-      paidAmount: organizerShareCents / 100,
+      paidAt: isScannedReceipt ? undefined : organizer.paidAt || new Date().toISOString(),
+      paidAmount: isScannedReceipt ? 0 : organizerShareCents / 100,
       splitId: organizerSplitId,
     };
 
@@ -172,7 +175,6 @@ export const useBillStore = create<BillStoreState>()(
     const allParticipants = [organizerParticipant, ...extraParticipants];
     const currentUser = useAuthStore.getState().user;
 
-    const initialItems = options?.initialItems || [];
     const copertoTotal = options?.copertoTotal || 0;
     const grandTotal =
       options?.grandTotal && options.grandTotal > 0
@@ -193,7 +195,11 @@ export const useBillStore = create<BillStoreState>()(
           assignedParticipantIds: allParticipants.map((p) => p.id),
         };
       }
-      return item;
+      return {
+        ...item,
+        assignedParticipantIds: item.assignedParticipantIds || [],
+        claimedQuantities: item.claimedQuantities || {},
+      };
     });
 
     const newBill: BillSession = {
@@ -202,7 +208,7 @@ export const useBillStore = create<BillStoreState>()(
       restaurantName,
       createdAt: new Date().toISOString(),
       currency: options?.currency || 'EUR',
-      status: initialItems.length > 0 ? 'itemizing' : 'draft',
+      status: isScannedReceipt ? 'itemizing' : 'draft',
       organizerId: organizer.id,
       participants: allParticipants,
       items: normalizedItems,
@@ -216,10 +222,10 @@ export const useBillStore = create<BillStoreState>()(
         discount: 0,
         grandTotal,
       },
-      splitMode: 'even',
-      manualTotalAmount: grandTotal,
+      splitMode: isScannedReceipt ? 'by_item' : 'even',
+      manualTotalAmount: isScannedReceipt ? undefined : grandTotal,
       includedParticipantIds: allParticipants.map((p) => p.id),
-      isManual: initialItems.length === 0,
+      isManual: !isScannedReceipt,
       organizerIban: currentUser?.bankAccount?.iban || 'IT60X0542811101000000123456',
       organizerBankName: currentUser?.bankAccount?.bankName || 'Intesa Sanpaolo S.p.A.',
       organizerAccountHolder:
@@ -640,6 +646,9 @@ export const useBillStore = create<BillStoreState>()(
         return {
           ...bill,
           status: 'itemizing' as const,
+          splitMode: 'by_item' as const,
+          isManual: false,
+          manualTotalAmount: undefined,
           items: normalizedItems,
           copertoPerPerson,
           taxSummary: {
@@ -663,9 +672,12 @@ export const useBillStore = create<BillStoreState>()(
     set((state) => {
       const bills = state.bills.map((bill) => {
         if (bill.id !== billId) return bill;
-        const defaultAssigned = itemData.assignedParticipantIds !== undefined
-          ? itemData.assignedParticipantIds
-          : bill.participants.map((p) => p.id);
+        const defaultAssigned =
+          itemData.assignedParticipantIds !== undefined
+            ? itemData.assignedParticipantIds
+            : bill.isManual || itemData.isCoperto
+            ? bill.participants.map((p) => p.id)
+            : [];
 
         const newItem: LineItem = {
           id: `item_${Date.now()}_${Math.random().toString(36).substring(5)}`,
@@ -829,22 +841,35 @@ export const useBillStore = create<BillStoreState>()(
       const bills = state.bills.map((bill) => {
         if (bill.id !== billId) return bill;
 
-        const organizer = bill.participants.find(
-          (p) => p.isOrganizer || p.id === bill.organizerId || p.id === 'user_me'
-        );
+        // Paid guests have completed their session and cannot edit item shares
+        const targetParticipant = bill.participants.find((p) => p.id === participantId);
+        const isGuestParticipant =
+          targetParticipant &&
+          !targetParticipant.isOrganizer &&
+          targetParticipant.id !== bill.organizerId &&
+          targetParticipant.id !== 'user_me';
+        if (isGuestParticipant && targetParticipant.status === 'paid') {
+          return bill;
+        }
 
         const updatedItems = bill.items.map((item) => {
           if (item.id !== itemId) return item;
 
           // Participant assignment toggle
           const exists = item.assignedParticipantIds.includes(participantId);
-          const newAssigned = exists
+          const currentClaimedMap = { ...(item.claimedQuantities || {}) };
+          const hasExplicitClaim = (currentClaimedMap[participantId] || 0) > 0;
+          const isCurrentlyAssigned = exists || hasExplicitClaim;
+
+          const newAssigned = isCurrentlyAssigned
             ? item.assignedParticipantIds.filter((id) => id !== participantId)
             : [...item.assignedParticipantIds, participantId];
 
-          const currentClaimedMap = { ...(item.claimedQuantities || {}) };
-          if (exists) {
+          if (isCurrentlyAssigned) {
             delete currentClaimedMap[participantId];
+          } else if (!bill.isManual && item.quantity > 1 && !item.isCoperto) {
+            // For multi-quantity receipt items, tapping the row claims 1 unit by default
+            currentClaimedMap[participantId] = 1;
           }
 
           return {
@@ -867,6 +892,17 @@ export const useBillStore = create<BillStoreState>()(
     set((state) => {
       const bills = state.bills.map((bill) => {
         if (bill.id !== billId) return bill;
+
+        // Paid guests have completed their session and cannot edit item shares
+        const targetParticipant = bill.participants.find((p) => p.id === participantId);
+        const isGuestParticipant =
+          targetParticipant &&
+          !targetParticipant.isOrganizer &&
+          targetParticipant.id !== bill.organizerId &&
+          targetParticipant.id !== 'user_me';
+        if (isGuestParticipant && targetParticipant.status === 'paid') {
+          return bill;
+        }
 
         const updatedItems = bill.items.map((item) => {
           if (item.id !== itemId) return item;
@@ -1004,8 +1040,8 @@ export const useBillStore = create<BillStoreState>()(
       };
     }
 
-    // --- Mode 1: Equal Split Mode (Split Evenly) ---
-    if (bill.splitMode === 'even') {
+    // --- Mode 1: Equal Split Mode (Split Evenly — only for Manual Bills) ---
+    if (bill.splitMode === 'even' && bill.isManual) {
       const allParticipantIds = bill.participants.map((p) => p.id);
       const includedIds =
         bill.includedParticipantIds && bill.includedParticipantIds.length > 0
@@ -1200,8 +1236,7 @@ export const useBillStore = create<BillStoreState>()(
         settled += friendsPaid;
       } else {
         // For uncollected receipts: remaining amount from friends (excluding organizer's own consumed food)
-        // If there are friends at table:
-        if (bill.participants.length > 1) {
+        if (bill.participants.length > 1 || !bill.isManual) {
           const uncollectedForBill = Math.max(
             0,
             bill.taxSummary.grandTotal - organizerShare - friendsPaid
@@ -1379,20 +1414,27 @@ export const useBillStore = create<BillStoreState>()(
           if (!updatedHolder || updatedHolder === 'Lorenzo De Angelis') {
             updatedHolder = 'Ilaria di Piu Bella in Mondo';
           }
+          const isScannedReceipt =
+            !bill.isManual && Array.isArray(bill.items) && bill.items.length > 0;
+
           const updatedParticipants = bill.participants.map((p) => {
             if (p.id === 'user_me' || p.isOrganizer) {
+              let updatedName = p.name;
               if (
                 p.name.includes('Lorenzo') ||
                 p.name === 'Marco (Organizer)' ||
                 p.name === 'You (Organizer)'
               ) {
-                return { ...p, name: 'Ilaria di Piu Bella in Mondo (Organizer)' };
+                updatedName = 'Ilaria di Piu Bella in Mondo (Organizer)';
               }
+              return { ...p, name: updatedName };
             }
             return p;
           });
           return {
             ...bill,
+            splitMode: isScannedReceipt ? 'by_item' : bill.splitMode,
+            manualTotalAmount: isScannedReceipt ? undefined : bill.manualTotalAmount,
             organizerAccountHolder: updatedHolder,
             participants: updatedParticipants,
           };

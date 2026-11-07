@@ -7,10 +7,12 @@ set -euxo pipefail
 # writes runtime .env, and launches the Quota Pay + Caddy HTTPS + Watchtower stack.
 # =============================================================================
 
-dnf install -y docker git
+dnf install -y docker git cronie
 
 systemctl enable docker
 systemctl start docker
+systemctl enable crond
+systemctl start crond
 
 # Install Docker Compose v2 plugin (curl-minimal is pre-installed on AL2023)
 mkdir -p /usr/local/lib/docker/cli-plugins
@@ -49,8 +51,25 @@ SPOT_HOURLY_RATE_USD=0.005
 EOF
 chmod 600 /opt/quota-pay/.env
 
-# Try pulling prebuilt GHCR image first; fallback to standard docker build from cloned repo
-if ! docker pull ghcr.io/efekankati/quota-pay:latest; then
-  DOCKER_BUILDKIT=0 docker build -t ghcr.io/efekankati/quota-pay:latest -f server/Dockerfile .
-fi
+# Build directly from the latest cloned dev branch (Node 22 + zero-WebSocket ledger)
+sed -i 's|ghcr.io/efekankati/quota-pay:latest|quota-pay-local:latest|g' /opt/quota-pay/docker-compose.yml
+DOCKER_BUILDKIT=0 docker build -t quota-pay-local:latest -f server/Dockerfile .
 docker compose up -d --no-build
+
+# Auto-sync cron job: polls origin/dev every 60s and rebuilds container on new commits
+cat <<'EOF' > /usr/local/bin/quota-git-sync.sh
+#!/bin/bash
+cd /opt/quota-pay || exit 0
+git fetch origin dev
+LOCAL=$(git rev-parse HEAD)
+REMOTE=$(git rev-parse origin/dev)
+if [ "$LOCAL" != "$REMOTE" ]; then
+  git reset --hard origin/dev
+  sed -i 's|ghcr.io/efekankati/quota-pay:latest|quota-pay-local:latest|g' /opt/quota-pay/docker-compose.yml
+  DOCKER_BUILDKIT=0 docker build -t quota-pay-local:latest -f server/Dockerfile .
+  docker compose up -d --no-build --force-recreate app
+fi
+EOF
+chmod +x /usr/local/bin/quota-git-sync.sh
+echo "* * * * * root /usr/local/bin/quota-git-sync.sh >> /var/log/quota-git-sync.log 2>&1" > /etc/cron.d/quota-git-sync
+chmod 644 /etc/cron.d/quota-git-sync

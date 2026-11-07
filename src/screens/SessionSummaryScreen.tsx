@@ -79,7 +79,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
       const orgDue = getBillShareBreakdown(bill.id, orgParticipant.id).totalDue;
       if (
         orgParticipant.status !== 'paid' ||
-        (orgDue > 0 && Math.abs((orgParticipant.paidAmount || 0) - orgDue) > 0.005)
+        Math.abs((orgParticipant.paidAmount || 0) - orgDue) > 0.005
       ) {
         markParticipantPaid(
           bill.id,
@@ -165,7 +165,9 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
     const breakdown = getBillShareBreakdown(bill.id, p.id);
     const isParticipantSettled = isOrg || p.status === 'paid';
     const settledVal = isOrg
-      ? (breakdown.totalDue > 0 ? breakdown.totalDue : (p.paidAmount || 0))
+      ? (bill.isManual
+          ? (breakdown.totalDue > 0 ? breakdown.totalDue : (p.paidAmount || 0))
+          : breakdown.totalDue)
       : (p.paidAmount || breakdown.totalDue);
 
     if (isParticipantSettled) {
@@ -190,6 +192,10 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
   const isFullySettled =
     (bill.status === 'settled' || (paidCount === bill.participants.length && bill.participants.length > 0)) &&
     allMoneyCovered;
+  const progressPercent =
+    grandTotal > 0
+      ? Math.min(100, Math.round((collectedAmount / grandTotal) * 100))
+      : 0;
   const devUrl = DeepLinkService.getBrowserDevUrl(bill);
   const universalLink = DeepLinkService.getUniversalLink(bill);
 
@@ -200,10 +206,11 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
   const organizerBreakdown = organizer
     ? getBillShareBreakdown(bill.id, organizer.id)
     : null;
-  const organizerSettledAmount =
-    organizer?.status === 'paid'
-      ? organizer.paidAmount || organizerBreakdown?.totalDue || 0
-      : organizerBreakdown?.totalDue || 0;
+  const organizerSettledAmount = bill.isManual
+    ? (organizer?.status === 'paid'
+        ? organizer.paidAmount || organizerBreakdown?.totalDue || 0
+        : organizerBreakdown?.totalDue || 0)
+    : (organizerBreakdown?.totalDue || 0);
 
   if (isFullySettled) {
     friendsRemainingTotal = 0;
@@ -225,7 +232,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
       <Header
         title={bill.restaurantName}
         subtitle={bill.title}
-        showBack
+        showBack={!isGuestBrowser}
         onBack={onBack}
       />
 
@@ -269,16 +276,18 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
               >
                 {isFullySettled
                   ? t('statusFullySettled')
-                  : t('statusPaidRatio', {
+                  : bill.participants.length > 1
+                  ? t('statusPaidRatio', {
                       paid: paidCount,
                       total: bill.participants.length,
-                    })}
+                    })
+                  : `${progressPercent}% • ${t('statusInCourse')}`}
               </Text>
             </View>
           </View>
 
           {/* Organizer Settled vs Remaining for Friends Breakdown */}
-          {grandTotal > 0 && bill.participants.length > 1 && (
+          {grandTotal > 0 && (bill.participants.length > 1 || !bill.isManual) && (
             <View
               style={[
                 styles.splitBreakdownPill,
@@ -338,9 +347,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
                 styles.progressFill,
                 {
                   backgroundColor: isFullySettled ? colors.accent : colors.blue,
-                  width: `${Math.round(
-                    (paidCount / Math.max(bill.participants.length, 1)) * 100
-                  )}%`,
+                  width: `${isFullySettled ? 100 : progressPercent}%`,
                 },
               ]}
             />
@@ -393,25 +400,27 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              onPress={() => onItemizeAgain(bill.id)}
-              style={[
-                styles.smallActionBtn,
-                {
-                  backgroundColor: colors.surfaceElevated,
-                  borderColor: colors.border,
-                },
-              ]}
-            >
-              <Text
-                style={[styles.smallActionText, { color: colors.textPrimary }]}
-                numberOfLines={1}
-                adjustsFontSizeToFit
-                minimumFontScale={0.75}
+            {!isGuestBrowser && (
+              <TouchableOpacity
+                onPress={() => onItemizeAgain(bill.id)}
+                style={[
+                  styles.smallActionBtn,
+                  {
+                    backgroundColor: colors.surfaceElevated,
+                    borderColor: colors.border,
+                  },
+                ]}
               >
-                {t('modifyItemShares')}
-              </Text>
-            </TouchableOpacity>
+                <Text
+                  style={[styles.smallActionText, { color: colors.textPrimary }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.75}
+                >
+                  {t('modifyItemShares')}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 

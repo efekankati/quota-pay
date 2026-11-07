@@ -137,7 +137,7 @@ export function createQuotaServer() {
 
       // 1. Health & FinOps Telemetry Endpoint
       if (method === 'GET' && pathname === '/api/health') {
-        const ledger = await SupabaseTokenLedger.getLedgerStatus();
+        const ledger = SupabaseTokenLedger.getLedgerStatusFast();
         const uptimeHours = (Date.now() - SERVER_START_MS) / (1000 * 3600);
         const spotHourlyRate = Number(process.env.SPOT_HOURLY_RATE_USD || 0.005);
         const computeCostUsd = Number((uptimeHours * spotHourlyRate).toFixed(6));
@@ -163,7 +163,7 @@ export function createQuotaServer() {
       // 3. Multimodal Receipt Parsing Endpoint (/api/ai/parse-receipt)
       if (method === 'POST' && pathname === '/api/ai/parse-receipt') {
         const maxBudget = SupabaseTokenLedger.getMaxBudgetUsd();
-        const preCheckLedger = await SupabaseTokenLedger.getLedgerStatus();
+        const preCheckLedger = SupabaseTokenLedger.getLedgerStatusFast();
 
         if (preCheckLedger.budget_exceeded || preCheckLedger.is_paused) {
           sendJson(res, 429, {
@@ -189,7 +189,7 @@ export function createQuotaServer() {
           mimeType
         );
 
-        // Atomically record tokens & cost via Supabase stored procedure `record_gemini_tokens`
+        // Atomically record tokens & cost (0ms in-memory + background Supabase RPC sync)
         const { budgetExceeded, ledger } = await SupabaseTokenLedger.recordGeminiTokens(
           usage.totalTokens,
           usage.estimatedCostUsd,
@@ -218,7 +218,7 @@ export function createQuotaServer() {
       // 4. Dynamic UI String Translation Endpoint (/api/ai/translate)
       if (method === 'POST' && pathname === '/api/ai/translate') {
         const maxBudget = SupabaseTokenLedger.getMaxBudgetUsd();
-        const preCheckLedger = await SupabaseTokenLedger.getLedgerStatus();
+        const preCheckLedger = SupabaseTokenLedger.getLedgerStatusFast();
 
         if (preCheckLedger.budget_exceeded || preCheckLedger.is_paused) {
           sendJson(res, 429, {

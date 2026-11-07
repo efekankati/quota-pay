@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Multi-Stage Builder (Expo Web Bundle + TypeScript Server Compilation)
 # =============================================================================
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /build
 
@@ -23,9 +23,9 @@ WORKDIR /build/server
 RUN npm install --omit=dev --no-audit --no-fund
 
 # =============================================================================
-# Stage 2: Minimal Node Alpine Production Runner
+# Stage 2: Minimal Node 22 Alpine Production Runner
 # =============================================================================
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 

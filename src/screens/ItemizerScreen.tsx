@@ -118,7 +118,7 @@ export const ItemizerScreen: React.FC<ItemizerScreenProps> = ({
   });
 
   const remainingToCollectFromFriends = Math.max(
-    grandTotal - (organizerParticipant?.paidAmount || organizerBreakdown.totalDue) - friendsPaidTotal,
+    Math.round((grandTotal - organizerBreakdown.totalDue - friendsPaidTotal) * 100) / 100,
     0
   );
 
@@ -238,83 +238,6 @@ export const ItemizerScreen: React.FC<ItemizerScreenProps> = ({
         dinerCount={bill.participants.length}
         copertoPerPerson={bill.copertoPerPerson}
       />
-
-      {/* Organizer Context Banner */}
-      {isOrganizerAlreadySettled && grandTotal > 0 && bill.participants.length > 1 ? (
-        <View
-          style={[
-            styles.organizerHintCard,
-            { backgroundColor: 'rgba(16, 185, 129, 0.08)', borderColor: '#10B981' },
-          ]}
-        >
-          <View style={styles.hintHeaderRow}>
-            <View style={styles.hintBadge}>
-              <CheckCircle2 size={14} color="#10B981" />
-              <Text style={[styles.hintBadgeText, { color: '#10B981' }]}>
-                {t('organizerAlreadySettledBadge')}
-              </Text>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-              <Lock size={12} color="#10B981" />
-              <Text style={[styles.remainingPill, { color: colors.amber }]}>
-                {t('remainingToCollect')}: €{remainingToCollectFromFriends.toFixed(2)}
-              </Text>
-            </View>
-          </View>
-          <Text style={[styles.hintDescription, { color: colors.textSecondary }]}>
-            {t('organizerShareLockedBanner', {
-              amount: (organizerParticipant?.paidAmount || organizerBreakdown.totalDue).toFixed(2),
-              remaining: remainingToCollectFromFriends.toFixed(2),
-            })}
-          </Text>
-        </View>
-      ) : isOrganizerSelected && grandTotal > 0 && bill.participants.length > 1 ? (
-        <View
-          style={[
-            styles.organizerHintCard,
-            { backgroundColor: colors.surfaceElevated, borderColor: colors.border },
-          ]}
-        >
-          <View style={styles.hintHeaderRow}>
-            <View style={styles.hintBadge}>
-              <CheckCircle2 size={14} color={colors.accent} />
-              <Text style={[styles.hintBadgeText, { color: colors.accent }]}>
-                {t('organizerAlreadySettledBadge')}
-              </Text>
-            </View>
-            <Text style={[styles.remainingPill, { color: colors.amber }]}>
-              {t('remainingToCollect')}: €{remainingToCollectFromFriends.toFixed(2)}
-            </Text>
-          </View>
-          <Text style={[styles.hintDescription, { color: colors.textSecondary }]}>
-            {t('organizerAssignHint')}
-          </Text>
-          {onOpenVerification && !isOrganizerAlreadySettled && (
-            <TouchableOpacity
-              activeOpacity={0.7}
-              onPress={() => {
-                lightImpact();
-                onOpenVerification(bill.id);
-              }}
-              style={[
-                styles.reverifyBtn,
-                {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.borderSubtle,
-                },
-              ]}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <FileCheck2 size={13} color={colors.accent} />
-                <Text style={[styles.reverifyBtnText, { color: colors.accent }]}>
-                  {t('verificationTitle')} • {t('editOrAddDishesBtn')}
-                </Text>
-              </View>
-              <ArrowRight size={13} color={colors.accent} />
-            </TouchableOpacity>
-          )}
-        </View>
-      ) : null}
 
       {/* Filter Tabs (All / Remaining to Split / My Items) */}
       <View style={[styles.filterBar, { borderBottomColor: colors.borderSubtle }]}>

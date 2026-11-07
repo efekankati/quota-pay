@@ -32,7 +32,7 @@ export const TableCard: React.FC<TableCardProps> = ({ bill, onPress, onLongPress
     const isOrg = Boolean(p.isOrganizer) || p.id === 'user_me' || p.id === bill.organizerId;
     if (isOrg || p.status === 'paid') {
       const due = getBillShareBreakdown(bill.id, p.id).totalDue;
-      return sum + (isOrg ? (due > 0 ? due : (p.paidAmount || 0)) : (p.paidAmount || due));
+      return sum + (isOrg ? (bill.isManual ? (due > 0 ? due : (p.paidAmount || 0)) : due) : (p.paidAmount || due));
     }
     return sum;
   }, 0);
@@ -179,7 +179,9 @@ export const TableCard: React.FC<TableCardProps> = ({ bill, onPress, onLongPress
         <View style={styles.statusSnippet}>
           <Users size={14} color={colors.textSecondary} />
           <Text style={[styles.statusText, { color: colors.textSecondary }]}>
-            {t('dinersSettledRatio', { paid: paidCount, total: totalCount })}
+            {!isSettled && totalCount <= 1
+              ? `${Math.round(progressRatio * 100)}% • ${t('statusInCourse')}`
+              : t('dinersSettledRatio', { paid: paidCount, total: totalCount })}
           </Text>
           <ChevronRight size={16} color={colors.textTertiary} />
         </View>

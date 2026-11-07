@@ -5,6 +5,7 @@ class BillSyncServiceImpl {
   private channel: any = null;
   private listeners: Set<(bill: BillSession) => void> = new Set();
   private splitListeners: Map<string, Set<(split: any) => void>> = new Map();
+  private lastLocalMutationAt: Map<string, number> = new Map();
   private isChannelReady = false;
 
   constructor() {
@@ -47,16 +48,18 @@ class BillSyncServiceImpl {
 
       if (existingKey) {
         const cloudP = mergedParticipantsMap.get(existingKey)!;
-        const isPaid = cloudP.status === 'paid' || localP.status === 'paid';
+        const isOrg = Boolean(localP.isOrganizer || cloudP.isOrganizer || existingKey === 'user_me');
+        const isPaid = isOrg ? localP.status === 'paid' : (cloudP.status === 'paid' || localP.status === 'paid');
         mergedParticipantsMap.set(existingKey, {
           ...cloudP,
           ...localP,
           id: existingKey,
           status: isPaid ? 'paid' : localP.status,
-          paidAmount:
-            isPaid
-              ? Math.max(cloudP.paidAmount || 0, localP.paidAmount || 0)
-              : localP.paidAmount,
+          paidAmount: isOrg
+            ? (localP.paidAmount !== undefined ? localP.paidAmount : cloudP.paidAmount)
+            : (isPaid
+                ? Math.max(cloudP.paidAmount || 0, localP.paidAmount || 0)
+                : localP.paidAmount),
           paidAt: cloudP.paidAt || localP.paidAt,
           paymentMethod: cloudP.paymentMethod || localP.paymentMethod,
         });
@@ -76,6 +79,12 @@ class BillSyncServiceImpl {
 
     // 3. Merge Line Items & Participant Claims
     const localParticipantIds = new Set((localBill.participants || []).map((p) => p.id));
+    // Paid guests in cloudBill have locked, immutable item claims
+    const paidCloudGuestIds = new Set(
+      (cloudBill.participants || [])
+        .filter((p) => !p.isOrganizer && p.id !== 'user_me' && p.status === 'paid')
+        .map((p) => p.id)
+    );
     const baseItems =
       localBill.items && localBill.items.length > 0
         ? localBill.items
@@ -98,18 +107,19 @@ class BillSyncServiceImpl {
       if (!cloudItem) return localItem;
 
       // Start with local claimedQuantities, then retain cloud claims from guests that weren't in localBill yet
+      // or guests who have already paid in cloudBill (locked claims)
       const mergedClaimed: Record<string, number> = {
         ...(localItem.claimedQuantities || {}),
       };
       for (const [pId, qty] of Object.entries(cloudItem.claimedQuantities || {})) {
-        if (!localParticipantIds.has(pId) && qty > 0) {
+        if ((!localParticipantIds.has(pId) || paidCloudGuestIds.has(pId)) && qty > 0) {
           mergedClaimed[pId] = qty;
         }
       }
 
       const assignedSet = new Set<string>(localItem.assignedParticipantIds || []);
       for (const pId of cloudItem.assignedParticipantIds || []) {
-        if (!localParticipantIds.has(pId)) {
+        if (!localParticipantIds.has(pId) || paidCloudGuestIds.has(pId)) {
           assignedSet.add(pId);
         }
       }
@@ -191,7 +201,12 @@ class BillSyncServiceImpl {
               if (row && typeof row.title === 'string' && row.title.startsWith('{')) {
                 const parsed = JSON.parse(row.title);
                 if (parsed?.bill) {
-                  this.notifyListeners(parsed.bill as BillSession);
+                  const incoming = parsed.bill as BillSession;
+                  const lastMutated = this.lastLocalMutationAt.get(incoming.id) || 0;
+                  // Ignore self-echo from postgres_changes within 2s of our own local mutation
+                  if (Date.now() - lastMutated > 2000) {
+                    this.notifyListeners(incoming);
+                  }
                 }
               }
             } catch {
@@ -213,6 +228,7 @@ class BillSyncServiceImpl {
    */
   public async broadcastBillUpdate(bill: BillSession): Promise<void> {
     if (!bill || !bill.id) return;
+    this.lastLocalMutationAt.set(bill.id, Date.now());
 
     // 1. Instant Realtime WebSocket Broadcast for sub-50ms UI responsiveness
     try {
