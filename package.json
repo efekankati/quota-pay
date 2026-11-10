@@ -16,7 +16,7 @@
   "dependencies": {
     "@stripe/stripe-js": "^10.1.0",
     "@supabase/supabase-js": "^2.118.0",
-    "expo": "~58.0.21",
+    "expo": "~58.0.23",
     "expo-asset": "~58.0.19",
     "expo-blur": "~58.0.5",
     "expo-brightness": "~58.0.2",
@@ -27,7 +27,7 @@
     "expo-haptics": "~58.0.7",
     "expo-image-picker": "~58.0.10",
     "expo-linear-gradient": "~58.0.3",
-    "expo-linking": "~58.0.15",
+    "expo-linking": "~58.0.16",
     "expo-status-bar": "~58.0.4",
     "lucide-react-native": "^0.474.0",
     "react": "19.3.0",
