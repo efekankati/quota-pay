@@ -1,0 +1,111 @@
+version: "3.9"
+
+# =============================================================================
+# Proxmox VE (Edge) Multi-Node Compose Specification
+# Optimized for edge virtualization: local network binds, capped log sizes,
+# lightweight resource limits, and configurable cloud upstreams.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. Quota Ingress (Reverse Proxy & Edge Gateway)
+  # ---------------------------------------------------------------------------
+  quota-ingress:
+    image: caddy:2-alpine
+    container_name: quota-edge-ingress
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME:-:80}
+      - AI_PROXY_UPSTREAM=${AI_PROXY_UPSTREAM:-quota-ai-proxy:3000}
+      - FRONTEND_UPSTREAM=${FRONTEND_UPSTREAM:-quota-web-frontend:8080}
+    volumes:
+      - ./Caddyfile.ingress:/etc/caddy/Caddyfile:ro
+      - edge_caddy_data:/data
+      - edge_caddy_config:/config
+    networks:
+      - edge-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # 2. Quota Web Frontend (SPA Static Client)
+  # ---------------------------------------------------------------------------
+  quota-web-frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    image: quota-web-frontend:latest
+    container_name: quota-edge-frontend
+    restart: unless-stopped
+    expose:
+      - "8080"
+    environment:
+      - NODE_ENV=production
+    networks:
+      - edge-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 384M
+
+  # ---------------------------------------------------------------------------
+  # 3. Quota AI Proxy (Edge fallback when placed locally)
+  # Activated when all_edge scenario is selected
+  # ---------------------------------------------------------------------------
+  quota-ai-proxy:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ai-proxy
+    image: quota-ai-proxy:latest
+    container_name: quota-edge-ai-proxy
+    restart: unless-stopped
+    profiles:
+      - full
+      - edge-ai
+    expose:
+      - "3000"
+    environment:
+      - NODE_ENV=production
+      - NODE_OPTIONS=--max-old-space-size=384
+      - PORT=3000
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL:-https://nnamvsnorjbsruwhkker.supabase.co}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - AI_MAX_BUDGET_USD=${AI_MAX_BUDGET_USD:-5.00}
+    networks:
+      - edge-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+
+networks:
+  edge-net:
+    driver: bridge
+
+volumes:
+  edge_caddy_data:
+  edge_caddy_config:

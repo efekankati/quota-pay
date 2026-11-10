@@ -1,0 +1,40 @@
+# =============================================================================
+# Component C: quota-ingress (Caddy Reverse Proxy & SSL Termination)
+# Dynamically routes /api/* to AI Proxy and all other traffic to Frontend.
+# Upstreams are configurable via environment variables for hybrid placement.
+# =============================================================================
+
+{$DOMAIN_NAME::80} {
+  encode zstd gzip
+
+  # Health check endpoint for container orchestrators and load balancers
+  respond /ingress-health 200 {
+    body "quota-ingress OK"
+  }
+
+  # Route backend API calls (Receipt OCR, Token Ledger, Health)
+  handle /api/* {
+    reverse_proxy {$AI_PROXY_UPSTREAM:quota-ai-proxy:3000} {
+      header_up Host {host}
+      header_up X-Real-IP {remote_host}
+      header_up X-Forwarded-For {remote_host}
+      header_up X-Forwarded-Proto {scheme}
+    }
+  }
+
+  # Route all other web traffic (Static Expo Web SPA)
+  handle {
+    reverse_proxy {$FRONTEND_UPSTREAM:quota-web-frontend:8080} {
+      header_up Host {host}
+      header_up X-Real-IP {remote_host}
+      header_up X-Forwarded-For {remote_host}
+      header_up X-Forwarded-Proto {scheme}
+    }
+  }
+
+  header {
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "SAMEORIGIN"
+    Referrer-Policy "strict-origin-when-cross-origin"
+  }
+}

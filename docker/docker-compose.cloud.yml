@@ -1,0 +1,106 @@
+version: "3.9"
+
+# =============================================================================
+# AWS Spot (Cloud) Multi-Node Compose Specification
+# Optimized for cloud spot execution: ephemeral lifecycle, FinOps memory controls,
+# Gemini proxy scaling, and token ledgering sync.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. Quota AI Proxy (Primary Cloud Workload)
+  # Computes multimodal Gemini receipt OCR & synchronizes token ledger with Supabase
+  # ---------------------------------------------------------------------------
+  quota-ai-proxy:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ai-proxy
+    image: quota-ai-proxy:latest
+    container_name: quota-cloud-ai-proxy
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NODE_OPTIONS=--max-old-space-size=512
+      - PORT=3000
+      - AWS_REGION=${AWS_REGION:-eu-south-1}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL:-https://nnamvsnorjbsruwhkker.supabase.co}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - AI_MAX_BUDGET_USD=${AI_MAX_BUDGET_USD:-5.00}
+      - SPOT_HOURLY_RATE_USD=${SPOT_HOURLY_RATE_USD:-0.005}
+    deploy:
+      resources:
+        limits:
+          cpus: "1.50"
+          memory: 768M
+        reservations:
+          memory: 256M
+    networks:
+      - cloud-net
+
+  # ---------------------------------------------------------------------------
+  # 2. Quota Ingress (Cloud Burst Profile)
+  # Activated when cloud_burst scenario places ingress on AWS Spot
+  # ---------------------------------------------------------------------------
+  quota-ingress:
+    image: caddy:2-alpine
+    container_name: quota-cloud-ingress
+    restart: unless-stopped
+    profiles:
+      - cloud-burst
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME:-:80}
+      - AI_PROXY_UPSTREAM=quota-ai-proxy:3000
+      - FRONTEND_UPSTREAM=quota-web-frontend:8080
+    volumes:
+      - ./Caddyfile.ingress:/etc/caddy/Caddyfile:ro
+      - cloud_caddy_data:/data
+      - cloud_caddy_config:/config
+    depends_on:
+      - quota-ai-proxy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    networks:
+      - cloud-net
+
+  # ---------------------------------------------------------------------------
+  # 3. Quota Web Frontend (Cloud Burst Profile)
+  # Activated when cloud_burst scenario places frontend on AWS Spot
+  # ---------------------------------------------------------------------------
+  quota-web-frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    image: quota-web-frontend:latest
+    container_name: quota-cloud-frontend
+    restart: unless-stopped
+    profiles:
+      - cloud-burst
+    expose:
+      - "8080"
+    environment:
+      - NODE_ENV=production
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 384M
+    networks:
+      - cloud-net
+
+networks:
+  cloud-net:
+    driver: bridge
+
+volumes:
+  cloud_caddy_data:
+  cloud_caddy_config:

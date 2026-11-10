@@ -1,0 +1,43 @@
+#cloud-config
+# =============================================================================
+# Cloud-Init User Data for Proxmox VE Edge Node
+# Installs Docker, clones Quota Pay, and starts the assigned compose profile
+# =============================================================================
+package_update: true
+package_upgrade: false
+packages:
+  - curl
+  - git
+  - ca-certificates
+
+write_files:
+  - path: /etc/systemd/system/quota-pay-compose.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Quota Pay Edge Container Orchestration
+      After=docker.service
+      Requires=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/quota-pay
+      ExecStart=/usr/bin/docker compose -f docker/${compose_target} up -d
+      ExecStop=/usr/bin/docker compose -f docker/${compose_target} down
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # 1. Install Docker Engine
+  - curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+  - sh /tmp/get-docker.sh
+  - systemctl enable --now docker
+  # 2. Setup workspace directory
+  - mkdir -p /opt/quota-pay
+  - cd /opt/quota-pay
+  - git clone https://github.com/efekankati/quota-pay.git . || git pull
+  # 3. Enable and trigger compose launch
+  - systemctl daemon-reload
+  - systemctl enable --now quota-pay-compose.service
