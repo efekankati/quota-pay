@@ -32,6 +32,7 @@ resource "proxmox_virtual_environment_vm" "edge_node" {
   node_name   = var.node_name
   description = "Quota Pay Edge Node (${join(", ", var.services)}) [FIGARO Orchestrated]"
   tags        = ["quota-pay", "edge", "figaro"]
+  started     = false
 
   cpu {
     cores = var.cores
@@ -61,5 +62,9 @@ resource "proxmox_virtual_environment_vm" "edge_node" {
       }
     }
     user_data_file_id = proxmox_virtual_environment_file.cloud_init.id
+  }
+
+  provisioner "local-exec" {
+    command = "python -c \"import urllib.request, ssl; ctx = ssl._create_unverified_context(); req = urllib.request.Request('https://192.168.178.125:8006/api2/json/nodes/${self.node_name}/qemu/${self.vm_id}/config', data=b'kvm=0', headers={'Authorization': 'PVEAPIToken=root@pam!terraform=98410344-21d0-4c11-b9e6-021235b64445'}, method='PUT'); urllib.request.urlopen(req, context=ctx); req2 = urllib.request.Request('https://192.168.178.125:8006/api2/json/nodes/${self.node_name}/qemu/${self.vm_id}/status/start', data=b'', headers={'Authorization': 'PVEAPIToken=root@pam!terraform=98410344-21d0-4c11-b9e6-021235b64445'}, method='POST'); urllib.request.urlopen(req2, context=ctx)\""
   }
 }
