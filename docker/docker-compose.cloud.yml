@@ -1,5 +1,3 @@
-version: "3.9"
-
 # =============================================================================
 # AWS Spot (Cloud) Multi-Node Compose Specification
 # Optimized for cloud spot execution: ephemeral lifecycle, FinOps memory controls,
@@ -25,9 +23,9 @@ services:
       - NODE_OPTIONS=--max-old-space-size=512
       - PORT=3000
       - AWS_REGION=${AWS_REGION:-eu-south-1}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - SUPABASE_URL=${SUPABASE_URL:-https://nnamvsnorjbsruwhkker.supabase.co}
-      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
       - AI_MAX_BUDGET_USD=${AI_MAX_BUDGET_USD:-5.00}
       - SPOT_HOURLY_RATE_USD=${SPOT_HOURLY_RATE_USD:-0.005}
