@@ -61,12 +61,16 @@ export class GeminiReceiptService {
       candidates.push(`http://${ENV.LOCAL_DEV_IP}:3000`);
     }
 
+    // Proxmox Edge Container candidate
+    candidates.push('http://192.168.178.128:3000');
+    candidates.push('http://192.168.178.128');
+
     if (ENV.AI_PROXY_URL && ENV.AI_PROXY_URL.trim().length > 0) {
       candidates.push(ENV.AI_PROXY_URL.trim().replace(/\/+$/, ''));
     }
 
-    // Always include current AWS Milan Spot fallback
-    candidates.push('http://15.160.52.56');
+    // AWS Milan Spot fallback
+    candidates.push('http://15.160.125.0:3000');
 
     if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.origin) {
       candidates.push(window.location.origin.replace(/\/+$/, ''));
