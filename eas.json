@@ -1,0 +1,45 @@
+{
+  "cli": {
+    "version": ">= 12.0.0"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview-proxmox": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "production",
+        "EXPO_PUBLIC_AI_PROXY_URL": "http://192.168.178.128",
+        "EXPO_PUBLIC_API_BASE_URL": "http://192.168.178.128/api/v1",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://nnamvsnorjbsruwhkker.supabase.co"
+      }
+    },
+    "preview-cloud": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "production",
+        "EXPO_PUBLIC_AI_PROXY_URL": "http://15.160.125.0:3000",
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.quota.eu/v1",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://nnamvsnorjbsruwhkker.supabase.co"
+      }
+    },
+    "production": {
+      "channel": "production",
+      "autoIncrement": true,
+      "android": {
+        "buildType": "app-bundle"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
