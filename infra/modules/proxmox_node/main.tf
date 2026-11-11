@@ -35,7 +35,7 @@ resource "proxmox_virtual_environment_vm" "edge_node" {
 
   cpu {
     cores = var.cores
-    type  = "host"
+    type  = "qemu64"
   }
 
   memory {

@@ -78,3 +78,16 @@ variable "proxmox_insecure" {
   description = "Disable TLS verification for self-signed Proxmox certificates"
   default     = true
 }
+
+variable "proxmox_password" {
+  type        = string
+  description = "Proxmox root SSH password for uploading cloud-init snippets"
+  default     = ""
+  sensitive   = true
+}
+
+variable "proxmox_ssh_private_key_file" {
+  type        = string
+  description = "Path to SSH private key file for Proxmox root authentication"
+  default     = "~/.ssh/id_ed25519"
+}
