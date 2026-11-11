@@ -25,7 +25,7 @@ variable "memory_mb" {
 variable "disk_gb" {
   type        = number
   description = "Root disk size in gigabytes"
-  default     = 20
+  default     = 8
 }
 
 variable "cloud_init_image" {

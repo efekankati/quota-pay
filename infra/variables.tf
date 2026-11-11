@@ -63,7 +63,7 @@ variable "ai_max_budget_usd" {
 variable "proxmox_endpoint" {
   type        = string
   description = "Proxmox VE API URL (e.g. https://pve.local:8006/)"
-  default     = "https://192.168.1.100:8006/"
+  default     = "https://192.168.178.125:8006/"
 }
 
 variable "proxmox_api_token" {
