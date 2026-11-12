@@ -74,9 +74,6 @@ services:
     image: quota-ai-proxy:latest
     container_name: quota-edge-ai-proxy
     restart: unless-stopped
-    profiles:
-      - full
-      - edge-ai
     expose:
       - "3000"
     environment:
