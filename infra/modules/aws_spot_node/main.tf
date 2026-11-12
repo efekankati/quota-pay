@@ -31,7 +31,8 @@ resource "aws_instance" "spot_node" {
   instance_type               = var.instance_type
   subnet_id                   = var.subnet_id
   vpc_security_group_ids      = [var.security_group_id]
-  associate_public_ip_address = true
+  associate_public_ip_address          = true
+  instance_initiated_shutdown_behavior = "terminate"
 
   instance_market_options {
     market_type = "spot"

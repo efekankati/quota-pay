@@ -43,6 +43,21 @@ def main():
         help="Execute terraform apply to provision and start infrastructure",
     )
     parser.add_argument(
+        "--destroy",
+        action="store_true",
+        help="Tear down and destroy all deployed infrastructure across Cloud, Edge, and Local",
+    )
+    parser.add_argument(
+        "--purge-edge-container",
+        action="store_true",
+        help="When destroying, completely purge LXC Container 101 from Proxmox",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate execution without applying real infrastructure mutations",
+    )
+    parser.add_argument(
         "--edge-ip",
         default="192.168.178.128",
         help="Proxmox edge container IP address (default: 192.168.178.128)",
@@ -54,6 +69,16 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.destroy:
+        from scripts.destroy_all import main as destroy_main
+        sub_args = []
+        if args.purge_edge_container:
+            sub_args.append("--purge-edge-container")
+        if args.dry_run:
+            sub_args.append("--dry-run")
+        destroy_main(sub_args)
+        return
 
     print("=" * 70)
     print("🚀 QUOTA PAY MULTI-NODE ORCHESTRATION PIPELINE")

@@ -286,6 +286,25 @@ export function createQuotaServer() {
         return;
       }
 
+      // Touch heartbeat file on all API calls for dead man's switch
+      try {
+        if (pathname.startsWith('/api/')) {
+          (fs as any).writeFileSync('/tmp/quota_last_heartbeat', Date.now().toString());
+        }
+      } catch {
+        // ignore on systems where /tmp is inaccessible
+      }
+
+      // Heartbeat Endpoint for Dead Man's Switch
+      if ((method === 'GET' || method === 'POST') && pathname === '/api/heartbeat') {
+        sendJson(res, 200, {
+          status: 'ok',
+          alive: true,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
       // 1. Health & FinOps Telemetry Endpoint
       if (method === 'GET' && pathname === '/api/health') {
         const ledger = SupabaseTokenLedger.getLedgerStatusFast();

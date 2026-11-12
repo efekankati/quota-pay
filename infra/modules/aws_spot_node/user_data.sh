@@ -54,3 +54,38 @@ cp /opt/quota-pay/docker/.env.placement /opt/quota-pay/.env
 # Build and start assigned profile
 cd /opt/quota-pay
 docker compose -f docker/${compose_target} up -d --build
+
+# Dead Man's Switch: Auto-terminates EC2 Spot instance if no client heartbeat or after max session TTL
+cat <<'EOF' > /usr/local/bin/quota-deadman-watchdog.sh
+#!/bin/bash
+HEARTBEAT_FILE="/tmp/quota_last_heartbeat"
+TIMEOUT_SEC=900    # 15 minutes without local client connection
+MAX_TTL_SEC=14400  # 4 hours absolute session ceiling
+
+UPTIME_SEC=$(awk '{print int($1)}' /proc/uptime)
+if [ "$UPTIME_SEC" -gt "$MAX_TTL_SEC" ]; then
+  echo "[DeadManSwitch] Max session TTL reached ($MAX_TTL_SEC s). Terminating Spot instance." | logger -t quota-deadman
+  shutdown -h now
+  exit 0
+fi
+
+if [ -f "$HEARTBEAT_FILE" ]; then
+  LAST_PING=$(stat -c %Y "$HEARTBEAT_FILE")
+  NOW=$(date +%s)
+  DIFF=$((NOW - LAST_PING))
+  if [ "$DIFF" -gt "$TIMEOUT_SEC" ]; then
+    echo "[DeadManSwitch] No client heartbeat for $DIFF s (limit $TIMEOUT_SEC s). Terminating Spot instance." | logger -t quota-deadman
+    shutdown -h now
+  fi
+else
+  # If 20 minutes passed since boot without any initial heartbeat, terminate
+  if [ "$UPTIME_SEC" -gt 1200 ]; then
+    echo "[DeadManSwitch] No initial heartbeat received within 20m. Terminating Spot instance." | logger -t quota-deadman
+    shutdown -h now
+  fi
+fi
+EOF
+chmod +x /usr/local/bin/quota-deadman-watchdog.sh
+echo "*/2 * * * * root /usr/local/bin/quota-deadman-watchdog.sh >> /var/log/quota-deadman.log 2>&1" > /etc/cron.d/quota-deadman
+chmod 644 /etc/cron.d/quota-deadman
+
