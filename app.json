@@ -44,7 +44,8 @@
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.INTERNET",
         "android.permission.VIBRATE",
-        "com.google.android.gms.permission.AD_ID"
+        "com.google.android.gms.permission.AD_ID",
+        "android.permission.RECORD_AUDIO"
       ],
       "intentFilters": [
         {
@@ -82,6 +83,11 @@
       "expo-font",
       "expo-status-bar"
     ],
-    "scheme": "quota"
+    "scheme": "quota",
+    "extra": {
+      "eas": {
+        "projectId": "7f79dd2e-07c2-4a1e-8453-e57ed5a42fab"
+      }
+    }
   }
 }
