@@ -586,7 +586,7 @@ export const useBillStore = create<BillStoreState>()(
 
         const coversCount =
           copertoItem && copertoItem.quantity > 0
-            ? copertoItem.quantity
+            ? Math.max(copertoItem.quantity, updatedParticipants.length)
             : updatedParticipants.length;
         const copertoPerPerson =
           copertoItem && coversCount > 0
@@ -1286,8 +1286,37 @@ export const useBillStore = create<BillStoreState>()(
     // Coperto is only applied if the bill has a genuine Coperto line item (e.g. Italian receipt OCR)
     const copertoItem = bill.items.find((it) => it.isCoperto);
     const hasClaimedItems = claimedItemCount > 0 || itemsShare > 0;
-    const copertoShare =
-      copertoItem && hasClaimedItems ? (bill.copertoPerPerson || 0) : 0;
+    
+    // Calculate coperto share with strict ceiling: total coperto collected across table never exceeds copertoItem.totalPrice
+    let copertoShare = 0;
+    if (copertoItem && hasClaimedItems && copertoItem.totalPrice > 0) {
+      const activeClaimersCount = bill.participants.filter((p) => {
+        const isThisOrg = Boolean(p.isOrganizer) || p.id === bill.organizerId || p.id === 'user_me';
+        return bill.items.some((it) => {
+          if (it.isCoperto) return false;
+          const cMap = it.claimedQuantities || {};
+          const myQ = isThisOrg
+            ? (cMap[p.id] ?? cMap[bill.organizerId] ?? cMap['user_me'] ?? 0)
+            : (cMap[p.id] || 0);
+          if (myQ > 0) return true;
+          const aIds = it.assignedParticipantIds || [];
+          return isThisOrg
+            ? aIds.includes(p.id) || aIds.includes(bill.organizerId) || aIds.includes('user_me')
+            : aIds.includes(p.id);
+        });
+      }).length;
+
+      const divisor = Math.max(
+        copertoItem.quantity || 1,
+        activeClaimersCount,
+        bill.participants.length
+      );
+      const fairCoperto = Math.round((copertoItem.totalPrice / divisor) * 100) / 100;
+      copertoShare = bill.copertoPerPerson !== undefined && bill.copertoPerPerson > 0
+        ? Math.min(bill.copertoPerPerson, fairCoperto)
+        : fairCoperto;
+    }
+
     const baseAmount = itemsShare + copertoShare;
 
     // Tip is only for the organizer - guest diners do not pay tips
@@ -1444,18 +1473,18 @@ export const useBillStore = create<BillStoreState>()(
           name: `${currentUser?.fullName || 'Ilaria di Piu Bella in Mondo'} (Organizer)`,
           isOrganizer: true,
           status: 'paid',
-          paidAmount: 26.5,
+          paidAmount: 22.5,
           paymentMethod: 'apple_pay',
         },
       ],
       items: [
         {
           id: 'item_1',
-          name: 'Tonnarelli Cacio e Pepe',
-          rawText: 'Tonnarelli Cacio e Pepe',
-          quantity: 2,
-          unitPrice: 13.5,
-          totalPrice: 27.0,
+          name: 'Carbonara Classica',
+          rawText: 'Carbonara Classica',
+          quantity: 3,
+          unitPrice: 14.0,
+          totalPrice: 42.0,
           vatRate: 10,
           isCoperto: false,
           assignedParticipantIds: ['user_me'],
@@ -1463,11 +1492,11 @@ export const useBillStore = create<BillStoreState>()(
         },
         {
           id: 'item_2',
-          name: 'Tagliata di Manzo al Rosmarino',
-          rawText: 'Tagliata di Manzo al Rosmarino',
+          name: 'Cacio e Pepe con Fiori di Zucca',
+          rawText: 'Cacio e Pepe con Fiori di Zucca',
           quantity: 2,
-          unitPrice: 22.0,
-          totalPrice: 44.0,
+          unitPrice: 13.5,
+          totalPrice: 27.0,
           vatRate: 10,
           isCoperto: false,
           assignedParticipantIds: [],
@@ -1475,23 +1504,23 @@ export const useBillStore = create<BillStoreState>()(
         },
         {
           id: 'item_3',
-          name: 'Tiramisù Tradizionale',
-          rawText: 'Tiramisù Tradizionale',
-          quantity: 2,
-          unitPrice: 6.5,
-          totalPrice: 13.0,
+          name: 'Amatriciana Tradizionale',
+          rawText: 'Amatriciana Tradizionale',
+          quantity: 3,
+          unitPrice: 13.5,
+          totalPrice: 40.5,
           vatRate: 10,
           isCoperto: false,
-          assignedParticipantIds: ['user_me'],
-          claimedQuantities: { user_me: 1 },
+          assignedParticipantIds: [],
+          claimedQuantities: {},
         },
         {
           id: 'item_4',
-          name: 'Acqua Naturale e Frizzante',
-          rawText: 'Acqua Naturale e Frizzante',
+          name: 'Saltimbocca alla Romana',
+          rawText: 'Saltimbocca alla Romana',
           quantity: 2,
-          unitPrice: 3.0,
-          totalPrice: 6.0,
+          unitPrice: 18.0,
+          totalPrice: 36.0,
           vatRate: 10,
           isCoperto: false,
           assignedParticipantIds: [],
@@ -1499,11 +1528,83 @@ export const useBillStore = create<BillStoreState>()(
         },
         {
           id: 'item_5',
-          name: 'Coperto & Pane Casereccio',
-          rawText: 'Coperto & Pane Casereccio',
+          name: 'Carciofi alla Giudia',
+          rawText: 'Carciofi alla Giudia',
           quantity: 4,
+          unitPrice: 7.0,
+          totalPrice: 28.0,
+          vatRate: 10,
+          isCoperto: false,
+          assignedParticipantIds: [],
+          claimedQuantities: {},
+        },
+        {
+          id: 'item_6',
+          name: 'Tiramisù Tradizionale',
+          rawText: 'Tiramisù Tradizionale',
+          quantity: 5,
+          unitPrice: 6.0,
+          totalPrice: 30.0,
+          vatRate: 10,
+          isCoperto: false,
+          assignedParticipantIds: ['user_me'],
+          claimedQuantities: { user_me: 1 },
+        },
+        {
+          id: 'item_7',
+          name: 'Vino Rosso della Casa (Caraffa 1L)',
+          rawText: 'Vino Rosso della Casa (Caraffa 1L)',
+          quantity: 2,
+          unitPrice: 16.0,
+          totalPrice: 32.0,
+          vatRate: 10,
+          isCoperto: false,
+          assignedParticipantIds: [],
+          claimedQuantities: {},
+        },
+        {
+          id: 'item_8',
+          name: 'Acqua Minerale Naturale e Frizzante 1L',
+          rawText: 'Acqua Minerale Naturale e Frizzante 1L',
+          quantity: 4,
+          unitPrice: 3.0,
+          totalPrice: 12.0,
+          vatRate: 10,
+          isCoperto: false,
+          assignedParticipantIds: [],
+          claimedQuantities: {},
+        },
+        {
+          id: 'item_9',
+          name: 'Caffè Espresso',
+          rawText: 'Caffè Espresso',
+          quantity: 7,
+          unitPrice: 1.5,
+          totalPrice: 10.5,
+          vatRate: 10,
+          isCoperto: false,
+          assignedParticipantIds: [],
+          claimedQuantities: {},
+        },
+        {
+          id: 'item_10',
+          name: 'Limoncello di Sorrento',
+          rawText: 'Limoncello di Sorrento',
+          quantity: 6,
+          unitPrice: 3.5,
+          totalPrice: 21.0,
+          vatRate: 10,
+          isCoperto: false,
+          assignedParticipantIds: [],
+          claimedQuantities: {},
+        },
+        {
+          id: 'item_coperto',
+          name: 'Coperto & Pane Casereccio (10 persone)',
+          rawText: 'Coperto & Pane Casereccio (10 persone)',
+          quantity: 10,
           unitPrice: 2.5,
-          totalPrice: 10.0,
+          totalPrice: 25.0,
           vatRate: 10,
           isCoperto: true,
           assignedParticipantIds: [],
@@ -1511,12 +1612,12 @@ export const useBillStore = create<BillStoreState>()(
         },
       ],
       taxSummary: {
-        subtotal: 90.0,
-        copertoTotal: 10.0,
-        totalVat: 9.09,
+        subtotal: 280.45,
+        copertoTotal: 25.0,
+        totalVat: 28.05,
         serviceCharge: 0,
         discount: 0,
-        grandTotal: 100.0,
+        grandTotal: 308.5,
       },
     };
 

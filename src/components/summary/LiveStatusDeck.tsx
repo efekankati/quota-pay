@@ -30,16 +30,8 @@ export const LiveStatusDeck: React.FC<LiveStatusDeckProps> = ({
         {t('settlementRealTimeHeader')}
       </Text>
 
-      <FlatList
-        data={bill.participants}
-        keyExtractor={(participant) => participant.id}
-        scrollEnabled={false}
-        initialNumToRender={10}
-        maxToRenderPerBatch={10}
-        windowSize={5}
-        removeClippedSubviews={Platform.OS !== 'web'}
-        ItemSeparatorComponent={() => <View style={{ height: SPACING.sm + 2 }} />}
-        renderItem={({ item: participant }) => {
+      <View style={styles.list}>
+        {bill.participants.map((participant) => {
           const breakdown = getBillShareBreakdown(bill.id, participant.id);
           const isOrg =
             Boolean(participant.isOrganizer) ||
@@ -52,6 +44,7 @@ export const LiveStatusDeck: React.FC<LiveStatusDeckProps> = ({
 
           return (
             <View
+              key={participant.id}
               style={[
                 styles.participantRow,
                 {
@@ -116,8 +109,8 @@ export const LiveStatusDeck: React.FC<LiveStatusDeckProps> = ({
               </View>
             </View>
           );
-        }}
-      />
+        })}
+      </View>
     </View>
   );
 };
@@ -126,6 +119,7 @@ const styles = StyleSheet.create({
   container: {
     marginHorizontal: SPACING.lg,
     marginBottom: SPACING.xl,
+    ...(Platform.OS === 'web' ? ({ touchAction: 'pan-y' } as any) : {}),
   },
   sectionTitle: {
     fontSize: 11,
@@ -135,6 +129,7 @@ const styles = StyleSheet.create({
   },
   list: {
     gap: SPACING.sm + 2,
+    ...(Platform.OS === 'web' ? ({ touchAction: 'pan-y' } as any) : {}),
   },
   participantRow: {
     flexDirection: 'row',
@@ -143,6 +138,7 @@ const styles = StyleSheet.create({
     padding: SPACING.md,
     borderRadius: RADIUS.lg,
     borderWidth: 1,
+    ...(Platform.OS === 'web' ? ({ touchAction: 'pan-y' } as any) : {}),
   },
   leftInfo: {
     flexDirection: 'row',
