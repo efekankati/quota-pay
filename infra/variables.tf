@@ -91,3 +91,9 @@ variable "proxmox_ssh_private_key_file" {
   description = "Path to SSH private key file for Proxmox root authentication"
   default     = "~/.ssh/id_ed25519"
 }
+
+variable "git_branch" {
+  type        = string
+  description = "Git branch cloned onto newly provisioned AWS and Proxmox nodes"
+  default     = "main"
+}

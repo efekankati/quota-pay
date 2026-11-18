@@ -147,7 +147,7 @@ def deploy_spot_instance(dry_run: bool = False) -> Dict[str, Any]:
 def emergency_destroy(reason: str, dry_run: bool = False) -> Dict[str, Any]:
     """
     Immediately tears down all billable AWS infrastructure in eu-south-1
-    via `terraform destroy -auto-approve` inside an isolated subprocess,
+    across both standalone (`infra/terraform/`) and modular (`infra/`) roots,
     reducing cloud compute spend to $0.00/hr.
     """
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -166,11 +166,30 @@ def emergency_destroy(reason: str, dry_run: bool = False) -> Dict[str, Any]:
             f"terraform destroy failed (exit {destroy_proc.returncode}): {destroy_proc.stderr.strip()}"
         )
 
+    # Also destroy modular orchestrator state in `infra/` if provisioned
+    project_root = Path(__file__).resolve().parent.parent.parent
+    modular_state = project_root / "infra" / "terraform.tfstate"
+    modular_destroyed = False
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    try:
+        from scripts.destroy_all import _has_active_resources, destroy_aws_cloud
+
+        if _has_active_resources(modular_state):
+            destroy_aws_cloud(dry_run=dry_run)
+            modular_destroyed = True
+    except Exception as exc:
+        print(
+            f"[TerraformActuator] Warning destroying modular root: {exc}",
+            file=sys.stderr,
+        )
+
     result = {
         "status": "destroyed",
         "reason": reason,
         "region": "eu-south-1",
         "hourly_cost_usd": 0.0,
+        "modular_root_destroyed": modular_destroyed,
         "timestamp": timestamp,
     }
     print(f"[TerraformActuator] All AWS resources destroyed ($0.00/hr): {json.dumps(result)}")

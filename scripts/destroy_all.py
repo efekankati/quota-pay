@@ -107,6 +107,31 @@ def destroy_proxmox_edge(purge_container: bool = False, dry_run: bool = False):
         print(f"   ⚠️  Notice while stopping Edge node: {e}")
 
 
+def _extract_aws_targets(tfstate_path: Path) -> list[str]:
+    try:
+        state = json.loads(tfstate_path.read_text(encoding="utf-8"))
+        targets = []
+        for res in state.get("resources", []):
+            rtype = res.get("type", "")
+            mod = res.get("module", "")
+            if rtype.startswith("aws_") or "aws_spot_nodes" in mod:
+                addr = f"{mod}.{rtype}.{res['name']}" if mod else f"{rtype}.{res['name']}"
+                targets.append(addr)
+        return list(dict.fromkeys(targets))
+    except Exception:
+        return []
+
+
+def _has_active_resources(tfstate_path: Path) -> bool:
+    if not tfstate_path.exists():
+        return False
+    try:
+        state = json.loads(tfstate_path.read_text(encoding="utf-8"))
+        return len(state.get("resources", [])) > 0
+    except Exception:
+        return tfstate_path.stat().st_size > 500
+
+
 def destroy_aws_cloud(dry_run: bool = False):
     print("\n[3/3] ☁️  Teardown AWS Cloud Spot Infrastructure...")
     actuator = TerraformActuator(project_root=PROJECT_ROOT)
@@ -120,16 +145,27 @@ def destroy_aws_cloud(dry_run: bool = False):
         return
 
     destroyed = False
-    if infra_tfstate.exists() and infra_tfstate.stat().st_size > 500:
+    if _has_active_resources(infra_tfstate):
         print("   -> Running terraform destroy on infra/ (Modular)...")
         res = actuator.destroy(auto_approve=True)
         if res["success"]:
             print("   ✅ Modular AWS resources destroyed.")
             destroyed = True
         else:
-            print(f"   ⚠️  Modular destroy returned: {res.get('stderr')[:120]}")
+            print(f"   ⚠️  Full modular destroy blocked (likely offline Proxmox); falling back to targeted AWS destroy...")
+            aws_targets = _extract_aws_targets(infra_tfstate)
+            if aws_targets:
+                cmd = ["terraform", f"-chdir={PROJECT_ROOT / 'infra'}", "destroy", "-auto-approve", "-var-file=terraform.tfvars.json"]
+                for tgt in aws_targets:
+                    cmd.append(f"-target={tgt}")
+                tgt_res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                if tgt_res.returncode == 0:
+                    print("   ✅ Targeted AWS resources in infra/ destroyed.")
+                    destroyed = True
+                else:
+                    print(f"   ⚠️  Targeted AWS destroy notice: {tgt_res.stderr[:160]}")
 
-    if legacy_tfstate.exists() and legacy_tfstate.stat().st_size > 500:
+    if _has_active_resources(legacy_tfstate):
         print("   -> Running terraform destroy on infra/terraform/ (Standalone)...")
         try:
             cmd = ["terraform", f"-chdir={PROJECT_ROOT / 'infra' / 'terraform'}", "destroy", "-auto-approve"]

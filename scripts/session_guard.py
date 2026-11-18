@@ -75,13 +75,39 @@ if sys.platform == "win32":
     kernel32.SetConsoleCtrlHandler(_global_handler, True)
 
 
-def ping_heartbeat(cloud_ip: str, edge_ip: str):
-    """Pings /api/heartbeat on cloud and edge nodes to keep Dead Man's Switch refreshed."""
+def resolve_targets():
+    """
+    Resolves heartbeat targets. Explicit CLOUD_IP / EDGE_IP env vars win; otherwise the
+    live public IP is read from Terraform outputs so the guard never pings a stale address.
+    Returns (cloud_ip_or_None, edge_ip).
+    """
+    cloud_ip = os.environ.get("CLOUD_IP")
+    edge_ip = os.environ.get("EDGE_IP") or "192.168.178.128"
+    if cloud_ip:
+        return cloud_ip, edge_ip
+    try:
+        from src.orchestrator.actuator import TerraformActuator
+
+        topology = TerraformActuator(project_root=PROJECT_ROOT).get_topology()
+        cloud_nodes = topology.get("cloud_nodes")
+        if isinstance(cloud_nodes, dict):
+            for info in cloud_nodes.values():
+                ip = str((info or {}).get("public_ip") or "").strip()
+                if ip:
+                    return ip, edge_ip
+    except Exception:
+        pass
+    return None, edge_ip
+
+
+def ping_heartbeat(cloud_ip, edge_ip: str):
+    """Pings /api/heartbeat on live nodes to keep the cloud Dead Man's Switch refreshed."""
     targets = [
-        f"http://{cloud_ip}:3000/api/heartbeat",
         f"http://{edge_ip}/api/heartbeat",
         "http://localhost:3000/api/heartbeat",
     ]
+    if cloud_ip:
+        targets.insert(0, f"http://{cloud_ip}:3000/api/heartbeat")
     for url in targets:
         try:
             req = urllib.request.Request(url, method="GET")
@@ -92,13 +118,12 @@ def ping_heartbeat(cloud_ip: str, edge_ip: str):
 
 
 def main():
-    cloud_ip = os.environ.get("CLOUD_IP", "15.160.125.0")
-    edge_ip = os.environ.get("EDGE_IP", "192.168.178.128")
+    cloud_ip, edge_ip = resolve_targets()
 
     print("=" * 70)
     print("🛡️  QUOTA PAY SESSION GUARD (AUTO-DESTRUCTION ON DISCONNECT/SHUTDOWN)")
     print("=" * 70)
-    print(f"   Cloud Target : {cloud_ip}")
+    print(f"   Cloud Target : {cloud_ip or 'none (no cloud node in Terraform state)'}")
     print(f"   Edge Target  : {edge_ip}")
     print("\n   [ACTIVE PROTECTIONS]")
     print("   ✓ Manual exit (Ctrl+C, 'q', 'exit') -> Instant full teardown")
@@ -132,3 +157,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

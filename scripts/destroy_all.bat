@@ -10,3 +10,4 @@ python scripts\destroy_all.py %*
 echo.
 echo [Quota Pay] Complete. Spend is $0.00/hr.
 exit /b 0
+

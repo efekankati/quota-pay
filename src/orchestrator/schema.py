@@ -124,3 +124,40 @@ class PlacementDecision(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     notes: Optional[str] = None
+
+
+class OptimizationConstraints(BaseModel):
+    """Constraints passed into the FIGARO solver or Agentic Orchestrator."""
+    model_config = ConfigDict(use_enum_values=True)
+
+    max_hourly_budget_usd: float = Field(default=0.015, ge=0.0)
+    max_latency_ms: float = Field(default=50.0, ge=0.0)
+    prefer_edge: bool = True
+    allow_cloud_burst: bool = True
+    required_services: List[ServiceType] = Field(
+        default_factory=lambda: [
+            ServiceType.INGRESS,
+            ServiceType.FRONTEND,
+            ServiceType.AI_PROXY,
+        ]
+    )
+    objective: str = "min_latency_and_cost"
+
+
+class ClusterTelemetrySnapshot(BaseModel):
+    """Live edge, cloud, and FinOps telemetry fed into placement optimization."""
+    model_config = ConfigDict(use_enum_values=True)
+
+    proxmox_reachable: bool = False
+    proxmox_host: str = "192.168.178.125"
+    proxmox_available_cores: int = 4
+    proxmox_available_memory_mb: int = 2048
+    aws_region: str = "eu-south-1"
+    aws_spot_hourly_usd: float = 0.005
+    current_token_spend_usd: float = 0.0
+    max_budget_usd: float = 5.00
+    budget_remaining_usd: float = 5.00
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+

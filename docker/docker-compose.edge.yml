@@ -76,6 +76,8 @@ services:
     restart: unless-stopped
     expose:
       - "3000"
+    volumes:
+      - /tmp:/tmp
     environment:
       - NODE_ENV=production
       - NODE_OPTIONS=--max-old-space-size=384

@@ -1,20 +1,20 @@
 output "vm_id" {
-  value       = proxmox_virtual_environment_vm.edge_node.id
-  description = "Proxmox VM unique identifier"
+  value       = var.virtualization_type == "lxc" ? proxmox_virtual_environment_container.edge_lxc[0].id : proxmox_virtual_environment_vm.edge_node[0].id
+  description = "Proxmox container/VM unique identifier"
 }
 
 output "node_name" {
   value       = var.node_name
-  description = "Proxmox physical host node where the VM is placed"
+  description = "Proxmox physical host node where the VM/container is placed"
 }
 
 output "vm_name" {
-  value       = proxmox_virtual_environment_vm.edge_node.name
-  description = "Assigned virtual machine hostname"
+  value       = var.virtualization_type == "lxc" ? proxmox_virtual_environment_container.edge_lxc[0].initialization[0].hostname : proxmox_virtual_environment_vm.edge_node[0].name
+  description = "Assigned virtual machine or container hostname"
 }
 
 output "ipv4_address" {
-  value       = proxmox_virtual_environment_vm.edge_node.ipv4_addresses
+  value       = var.virtualization_type == "lxc" ? values(proxmox_virtual_environment_container.edge_lxc[0].ipv4) : flatten(proxmox_virtual_environment_vm.edge_node[0].ipv4_addresses)
   description = "Assigned IPv4 network addresses"
 }
 

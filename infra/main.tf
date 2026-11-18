@@ -159,6 +159,7 @@ module "proxmox_nodes" {
   memory_mb      = each.value.memory_mb
   services       = each.value.services
   compose_target = "docker-compose.edge.yml"
+  git_branch     = var.git_branch
 }
 
 # Module 2: AWS Spot Cloud Nodes
@@ -177,4 +178,5 @@ module "aws_spot_nodes" {
   supabase_url      = var.supabase_url
   supabase_anon_key = var.supabase_anon_key
   ai_max_budget_usd = var.ai_max_budget_usd
+  git_branch        = var.git_branch
 }

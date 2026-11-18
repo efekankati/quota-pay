@@ -9,10 +9,14 @@ from .schema import (
     NodeAllocation,
     ServiceAssignment,
     PlacementDecision,
+    OptimizationConstraints,
+    ClusterTelemetrySnapshot,
     TargetProvider,
     ServiceType,
 )
 from .figaro_adapter import FigaroPlacementAdapter
+from .figaro_connector import FigaroConnector
+from .agent_orchestrator import AgenticOrchestrator
 from .actuator import TerraformActuator
 
 __all__ = [
@@ -20,8 +24,12 @@ __all__ = [
     "NodeAllocation",
     "ServiceAssignment",
     "PlacementDecision",
+    "OptimizationConstraints",
+    "ClusterTelemetrySnapshot",
     "TargetProvider",
     "ServiceType",
     "FigaroPlacementAdapter",
+    "FigaroConnector",
+    "AgenticOrchestrator",
     "TerraformActuator",
 ]

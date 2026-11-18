@@ -29,7 +29,8 @@ if [ ! -f /swapfile ]; then
 fi
 
 rm -rf /opt/quota-pay
-git clone https://github.com/efekankati/quota-pay.git /opt/quota-pay
+git clone -b "${git_branch}" https://github.com/efekankati/quota-pay.git /opt/quota-pay || \
+  git clone https://github.com/efekankati/quota-pay.git /opt/quota-pay
 
 cd /opt/quota-pay
 
@@ -53,7 +54,8 @@ cp /opt/quota-pay/docker/.env.placement /opt/quota-pay/.env
 
 # Build and start assigned profile
 cd /opt/quota-pay
-docker compose -f docker/${compose_target} up -d --build
+cp /opt/quota-pay/docker/.env.placement /opt/quota-pay/docker/.env
+docker compose -f docker/${compose_target} up -d --build ${services}
 
 # Dead Man's Switch: Auto-terminates EC2 Spot instance if no client heartbeat or after max session TTL
 cat <<'EOF' > /usr/local/bin/quota-deadman-watchdog.sh

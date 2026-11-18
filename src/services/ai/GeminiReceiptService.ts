@@ -24,6 +24,63 @@ export interface GeminiReceiptResult {
 
 export class GeminiReceiptService {
   private static fastestProxyBaseUrl: string | null = null;
+  private static dynamicOrchestratorUrls: string[] = [];
+  private static lastDynamicRefreshAt: number = 0;
+
+  /**
+   * Fetches active Cloud/Edge URLs published to Supabase `orchestrator_endpoints`
+   * after Terraform applies, so APKs discover new Spot IPs dynamically without rebuilding.
+   */
+  public static async refreshDynamicEndpointsFromSupabase(): Promise<string[]> {
+    const now = Date.now();
+    if (now - this.lastDynamicRefreshAt < 30000 && this.dynamicOrchestratorUrls.length > 0) {
+      return this.dynamicOrchestratorUrls;
+    }
+
+    const supabaseUrl = ENV.SUPABASE_URL?.trim();
+    const supabaseKey = ENV.SUPABASE_ANON_KEY?.trim();
+    if (!supabaseUrl || !supabaseKey) {
+      return this.dynamicOrchestratorUrls;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 800);
+
+    try {
+      const endpoint = `${supabaseUrl.replace(/\/+$/, '')}/rest/v1/orchestrator_endpoints?id=eq.active&select=edge_url,cloud_url`;
+      const res = await fetch(endpoint, {
+        method: 'GET',
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+          Accept: 'application/json',
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (res.ok) {
+        const rows = await res.json();
+        if (Array.isArray(rows) && rows.length > 0) {
+          const row = rows[0] || {};
+          const discovered: string[] = [];
+          for (const candidate of [row.edge_url, row.cloud_url]) {
+            if (typeof candidate === 'string' && candidate.trim().startsWith('http')) {
+              discovered.push(candidate.trim().replace(/\/+$/, ''));
+            }
+          }
+          if (discovered.length > 0) {
+            this.dynamicOrchestratorUrls = Array.from(new Set(discovered));
+            this.lastDynamicRefreshAt = now;
+          }
+        }
+      }
+    } catch {
+      clearTimeout(timer);
+    }
+
+    return this.dynamicOrchestratorUrls;
+  }
 
   /**
    * Resolves candidate backend proxy URLs for `/api/ai/*` endpoints.
@@ -34,6 +91,10 @@ export class GeminiReceiptService {
 
     if (this.fastestProxyBaseUrl) {
       candidates.push(this.fastestProxyBaseUrl);
+    }
+
+    for (const url of this.dynamicOrchestratorUrls) {
+      candidates.push(url);
     }
 
     // Dynamically detect Metro host LAN IP if connected over Wi-Fi
@@ -89,6 +150,7 @@ export class GeminiReceiptService {
    * on sequential connection timeouts.
    */
   public static async resolveOrderedProxyUrls(): Promise<string[]> {
+    await this.refreshDynamicEndpointsFromSupabase();
     const candidates = this.getProxyCandidateBaseUrls();
     if (candidates.length <= 1) return candidates;
 

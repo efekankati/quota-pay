@@ -286,17 +286,15 @@ export function createQuotaServer() {
         return;
       }
 
-      // Touch heartbeat file on all API calls for dead man's switch
-      try {
-        if (pathname.startsWith('/api/')) {
-          (fs as any).writeFileSync('/tmp/quota_last_heartbeat', Date.now().toString());
-        }
-      } catch {
-        // ignore on systems where /tmp is inaccessible
-      }
-
-      // Heartbeat Endpoint for Dead Man's Switch
+      // Dead man's switch: only an explicit operator heartbeat refreshes the file.
+      // Docker HEALTHCHECK and client /api/health probes must NOT count, or the
+      // host watchdog would never fire on an idle instance.
       if ((method === 'GET' || method === 'POST') && pathname === '/api/heartbeat') {
+        try {
+          (fs as any).writeFileSync('/tmp/quota_last_heartbeat', Date.now().toString());
+        } catch {
+          // ignore on systems where /tmp is inaccessible
+        }
         sendJson(res, 200, {
           status: 'ok',
           alive: true,
