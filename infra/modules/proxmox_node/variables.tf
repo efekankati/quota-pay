@@ -45,3 +45,21 @@ variable "services" {
   description = "List of Quota Pay services assigned to this Proxmox node"
   default     = ["quota-web-frontend", "quota-ingress"]
 }
+
+variable "virtualization_type" {
+  type        = string
+  description = "Proxmox virtualization mode: 'lxc' (container, works without nested VT-x) or 'qemu' (full VM)"
+  default     = "lxc"
+}
+
+variable "lxc_template" {
+  type        = string
+  description = "Proxmox LXC OS template reference"
+  default     = "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
+}
+
+variable "git_branch" {
+  type        = string
+  description = "Git branch cloned inside the bootstrapped Proxmox node"
+  default     = "main"
+}

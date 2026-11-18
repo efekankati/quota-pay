@@ -63,3 +63,9 @@ variable "ai_max_budget_usd" {
   description = "FinOps monthly maximum budget limit for AI proxy"
   default     = "5.00"
 }
+
+variable "git_branch" {
+  type        = string
+  description = "Git branch cloned during EC2 cloud-init bootstrap"
+  default     = "main"
+}

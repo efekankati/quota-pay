@@ -31,7 +31,8 @@ resource "aws_instance" "spot_node" {
   instance_type               = var.instance_type
   subnet_id                   = var.subnet_id
   vpc_security_group_ids      = [var.security_group_id]
-  associate_public_ip_address = true
+  associate_public_ip_address          = true
+  instance_initiated_shutdown_behavior = "terminate"
 
   instance_market_options {
     market_type = "spot"
@@ -52,11 +53,12 @@ resource "aws_instance" "spot_node" {
 
   user_data = templatefile("${path.module}/user_data.sh", {
     compose_target    = var.compose_target
-    services          = join(", ", var.services)
+    services          = join(" ", var.services)
     gemini_api_key    = var.gemini_api_key
     supabase_url      = var.supabase_url
     supabase_anon_key = var.supabase_anon_key
     ai_max_budget_usd = var.ai_max_budget_usd
+    git_branch        = var.git_branch
   })
 
   tags = {

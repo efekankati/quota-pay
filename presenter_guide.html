@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Presenter Cheat Sheet &amp; Technical Reference</title>
+<style>
+  :root {
+    --ink: #1b2430;
+    --muted: #5a6574;
+    --border: #d3d8df;
+    --paper: #f5f4f0;
+    --card: #ffffff;
+    --tint: #eef1f4;
+    --accent: #c2410c;
+    --accent-bg: #fbe9df;
+    --ok: #15623d;
+    --ok-bg: #e2f3ea;
+    --warn: #8a5300;
+    --warn-bg: #fdf1db;
+    --sans: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: "Cascadia Mono", Consolas, Menlo, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--paper); color: var(--ink); font-family: var(--sans); line-height: 1.5; padding: 32px 24px 72px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+
+  /* Header & controls */
+  header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px; border-bottom: 3px solid var(--ink); padding-bottom: 18px; margin-bottom: 24px; }
+  .eyebrow { font: 700 11px var(--sans); letter-spacing: .16em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  h1 { font: 700 28px/1.15 var(--sans); }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn { display: inline-block; background: var(--card); border: 1px solid var(--border); color: var(--ink); font: 600 13px var(--sans); padding: 7px 14px; text-decoration: none; cursor: pointer; border-radius: 4px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn:hover { opacity: .88; }
+
+  /* Summary cheat box */
+  .opener { background: var(--card); border: 1px solid var(--border); border-left: 4px solid var(--accent); padding: 18px 22px; margin-bottom: 24px; }
+  .opener h2 { font: 700 15px var(--sans); text-transform: uppercase; letter-spacing: .08em; color: var(--accent); margin-bottom: 8px; }
+  .opener p { font: 400 16px/1.5 var(--sans); }
+  .vocab { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .vocab div { font-size: 13px; color: var(--muted); }
+  .vocab strong { display: block; color: var(--ink); font-size: 13.5px; }
+
+  /* Slide blocks */
+  .slide-card { background: var(--card); border: 1px solid var(--border); margin-bottom: 20px; border-radius: 4px; overflow: hidden; page-break-inside: avoid; break-inside: avoid; }
+  .slide-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; background: var(--tint); padding: 12px 20px; border-bottom: 1px solid var(--border); }
+  .slide-title { font: 700 18px var(--sans); }
+  .slide-title span { font-family: var(--mono); color: var(--accent); margin-right: 8px; }
+  .badge { font: 700 11px var(--sans); letter-spacing: .08em; text-transform: uppercase; padding: 3px 9px; border-radius: 3px; white-space: nowrap; }
+  .b-ok { background: var(--ok-bg); color: var(--ok); }
+  .b-mix { background: var(--warn-bg); color: var(--warn); }
+  .b-plan { background: var(--accent-bg); color: var(--accent); }
+
+  /* Talk track (easy readable layer) */
+  .say { padding: 16px 20px; }
+  .say-label { font: 700 11px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  .say ul { padding-left: 18px; }
+  .say li { font: 400 16px/1.48 var(--sans); margin-bottom: 6px; }
+  .say li b { font-weight: 600; }
+  .qa { margin-top: 10px; background: var(--paper); padding: 9px 12px; border-radius: 3px; font-size: 14.5px; }
+  .qa strong { color: var(--accent); }
+
+  /* Smaller-font technical appendix under each slide */
+  .tech { border-top: 1px dashed var(--border); background: #fafbfc; padding: 12px 20px 14px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+  .tech-label { font: 700 10px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 5px; }
+  .tech p { margin-bottom: 4px; }
+  .tech code { font: 11.5px var(--mono); color: var(--ink); background: #eef1f4; padding: 1px 4px; border-radius: 2px; }
+  body.hide-tech .tech { display: none; }
+
+  /* Demo cheat commands */
+  .commands { background: #1b2430; color: #e6e9ed; padding: 18px 22px; border-radius: 4px; margin-top: 28px; page-break-inside: avoid; }
+  .commands h2 { font: 700 14px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: #f6ad8a; margin-bottom: 10px; }
+  .cmd-row { margin-bottom: 12px; }
+  .cmd-row:last-child { margin-bottom: 0; }
+  .cmd-desc { font: 600 13px var(--sans); color: #cbd2dc; margin-bottom: 3px; }
+  pre { font: 12px/1.45 var(--mono); background: #111720; padding: 8px 12px; border-radius: 3px; overflow-x: auto; color: #f5f4f0; }
+
+  @media print {
+    body { background: #fff; padding: 12px; }
+    .controls { display: none; }
+    .slide-card { border-color: #bbb; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div>
+      <div class="eyebrow">Presenter Companion Sheet &amp; Deep-Dive Reference</div>
+      <h1>Cloud-Edge Orchestration Walkthrough</h1>
+    </div>
+    <div class="controls">
+      <a class="btn primary" href="presentation.html" target="_blank">Open Slide Deck</a>
+      <button class="btn" id="toggleTech">Toggle Small Technical Details</button>
+      <button class="btn" onclick="window.print()">Print Cheat Sheet</button>
+    </div>
+  </header>
+
+  <section class="opener">
+    <h2>How to Open (20-Second Intro)</h2>
+    <p>"In this project, I separated deciding <b>where</b> services run from actually building the servers across my local Proxmox setup and AWS Milan Spot. I wired up a shared placement plan connecting FIGARO (and an AI prompt planner I built) straight to Terraform and Docker, with automatic shutdown and budget caps built in. I'm using Quota Pay, a multi-tier app I built, as the test workload to exercise the pipeline."</p>
+    <div class="vocab">
+      <div><strong>Docker</strong>Packs each app service cleanly so it runs identically on edge or cloud.</div>
+      <div><strong>Terraform</strong>Builds VPCs, firewall rules, Proxmox containers, and EC2 instances from text files.</div>
+      <div><strong>Automation</strong>Unattended boot, budget caps, and auto-cleanup when my PC shuts down.</div>
+      <div><strong>FIGARO (Solver)</strong>Optimization math deciding edge vs. cloud based on cost &amp; latency.</div>
+      <div><strong>Agentic AI</strong>Turns plain English + live node telemetry into a validated placement plan.</div>
+    </div>
+  </section>
+
+  <!-- SLIDE 1 -->
+  <article class="slide-card">
+    <div class="slide-head">
+      <div class="slide-title"><span>01</span>Title Slide — Scope &amp; Caveat Up Front</div>
+      <span class="badge b-mix">Bridge Ready · Solver Mocked</span>
+    </div>
+    <div class="say">
+      <div class="say-label">What to say</div>
+      <ul>
+        <li>Make the scope clear right away: <b>the infrastructure orchestration pipeline is the main work</b>; Quota Pay is the test app running on top of it.</li>
+        <li>Mention upfront: since I don't have the external FIGARO repository yet, I built the complete input/output adapter and tested it using mock scenarios and a simulated Python solver callback.</li>
+      </ul>
+      <div class="qa"><strong>Quick answer if asked "Is FIGARO running?"</strong> Not the actual repo yet, since I don't have access to it—so I built a plug-and-play connector that already speaks its JSON/Python contract and is ready whenever I get the code.</div>
+    </div>
+    <div class="tech">
+      <div class="tech-label">Technical Reference (Smaller Detail)</div>
+      <p>Target hosts: Proxmox VE (<code>192.168.178.125:8006</code>, node <code>pve</code>, running inside VMware Workstation on Windows host <code>192.168.178.114</code>) and AWS <code>eu-south-1</code> (Milan) EC2 Spot. Git branch: <code>feature/modular-placement-orchestrator</code>.</p>
+    </div>
+  </article>
+
+  <!-- SLIDE 2 -->
+  <article class="slide-card">
+    <div class="slide-head">
+      <div class="slide-title"><span>02</span>Problem &amp; Objective — Data vs. Static Infrastructure</div>
+      <span class="badge b-ok">Implemented</span>
+    </div>
+    <div class="say">
+      <div class="say-label">What to say</div>
+      <ul>
+        <li>Normally, Terraform scripts hard-code which server runs each service. Moving something between edge and cloud means rewriting scripts by hand.</li>
+        <li>My setup separates the <b>decision</b> (FIGARO) from the <b>build step</b> (Terraform) using one strict JSON contract. Changing topology only swaps the input data file, not the Terraform templates.</li>
+      </ul>
+      <div class="qa"><strong>Quick answer if asked "Why not just use Ansible or bash?"</strong> Terraform tracks state across both AWS and Proxmox—it knows what already exists, creates or deletes VPCs automatically, and lets me tear everything down to $0/hr cleanly.</div>
+    </div>
+    <div class="tech">
+      <div class="tech-label">Technical Reference (Smaller Detail)</div>
+      <p>Contract models live in <code>src/orchestrator/schema.py</code> (Pydantic v2: <code>PlacementPlan</code>, <code>NodeAllocation</code>, <code>PlacementDecision</code>). Serialized into <code>infra/terraform.tfvars.json</code> matching <code>variable "placement_plan"</code> in <code>infra/main.tf</code>.</p>
+      <p><code>infra/main.tf</code> instantiates <code>module "proxmox_nodes"</code> and <code>module "aws_spot_nodes"</code> via Terraform <code>for_each</code> filters. Conditional flag <code>local.has_aws_nodes</code> creates/skips AWS VPC (<code>10.0.0.0/16</code>), public subnet (<code>10.0.1.0/24</code>), IGW, route table, and security group automatically.</p>
+    </div>
+  </article>
+
+  <!-- SLIDE 3 -->
+  <article class="slide-card">
+    <div class="slide-head">
+      <div class="slide-title"><span>03</span>Validation Workload (Quota Pay) — Why 3 Containers</div>
+      <span class="badge b-ok">Built &amp; Containerized</span>
+    </div>
+    <div class="say">
+      <div class="say-label">What to say</div>
+      <ul>
+        <li>Keep this quick—don't pitch the bill-splitting app itself, just explain <b>why it's a useful test workload</b>.</li>
+        <li>It splits naturally into three pieces with different needs: a lightweight router (<b>Gateway</b>), a fast static UI (<b>Web Client</b>) that makes sense close to users on Wi-Fi, and a heavier <b>AI Receipt Worker</b> holding private API keys that scales well in the cloud.</li>
+      </ul>
+      <div class="qa"><strong>Quick answer if asked "Where does the database live?"</strong> Auth, bills, and token tracking stay in Supabase cloud, so these three containers are stateless compute that I can move freely between Proxmox and AWS.</div>
+    </div>
+    <div class="tech">
+      <div class="tech-label">Technical Reference (Smaller Detail)</div>
+      <p>1) <code>quota-ingress</code> (<code>caddy:2-alpine</code>, ports <code>80/443</code>, limit <code>0.50 CPU / 256M RAM</code>): routes <code>/api/*</code> to <code>AI_PROXY_UPSTREAM</code> and <code>/*</code> to <code>FRONTEND_UPSTREAM</code> via <code>docker/Caddyfile.ingress</code>.</p>
+      <p>2) <code>quota-web-frontend</code> (<code>docker/Dockerfile.frontend</code>, Expo Web export + <code>nginx:1.27-alpine</code>, port <code>8080</code>, <code>&lt;25MB</code> image, limit <code>0.75 CPU / 384M RAM</code>, <code>/healthz</code> endpoint).</p>
+      <p>3) <code>quota-ai-proxy</code> (<code>docker/Dockerfile.ai-proxy</code>, Node 22 Alpine, port <code>3000</code>, edge limit <code>1.0 CPU / 512M RAM</code>, cloud limit <code>1.5 CPU / 768M RAM</code>): runs <code>server/src/index.ts</code> &amp; <code>geminiProxy.ts</code> (max body <code>10MB</code>, frees base64 buffers early for GC). Resource figures are compose limits, not profiled metrics.</p>
+    </div>
+  </article>
+
+  <!-- SLIDE 4 -->
+  <article class="slide-card">
+    <div class="slide-head">
+      <div class="slide-title"><span>04</span>How the Pipeline Works — End-to-End Bridge</div>
+      <span class="badge b-mix">Steps 1–6 Validated · Step 7 Untested Live</span>
+    </div>
+    <div class="say">
+      <div class="say-label">What to say</div>
+      <ul>
+        <li>Walk left to right: 1) Check live node status &amp; budget, 2) Pass into the adapter (ready for Python/CLI/HTTP/file FIGARO solver), 3) Validate the plan structure, 4) Write Terraform &amp; container configs, 5) Run safety checks before applying, 6) Launch Edge/Cloud nodes, 7) Sync newly assigned IPs back to Caddy &amp; the mobile DB.</li>
+        <li>Be upfront about what I've run: I tested Steps 1–6 in the placement suite and <code>terraform validate</code>; Step 7 (live IP sync across both providers) is implemented and type-checked, just waiting on a live two-node apply test.</li>
+      </ul>
+      <div class="qa"><strong>Quick answer if asked "How hard is it to connect the real FIGARO code?"</strong> It's one environment variable (<code>FIGARO_MODE</code>) to switch from <code>mock</code> to importing FIGARO's Python function, running its CLI, or calling its HTTP endpoint.</div>
+    </div>
+    <div class="tech">
+      <div class="tech-label">Technical Reference (Smaller Detail)</div>
+      <p>Bridge files in <code>src/orchestrator/</code>: <code>figaro_connector.py</code> (<code>FigaroConnector.collect_live_telemetry</code> probes Proxmox TCP <code>8006/22</code> + reads budget; <code>solve()</code> handles <code>mock | python | cli | http | file | raw</code>), <code>figaro_adapter.py</code> (normalizes aliases like <code>edge</code>/<code>pve</code>/<code>spot</code>), and <code>actuator.py</code> (<code>export_tfvars_json</code>, <code>generate_placement_env</code>, <code>validate</code>, <code>apply</code>).</p>
+      <p>Closed-loop post-apply hooks added to <code>scripts/deploy_nodes.py</code> &amp; <code>actuator.py</code>: <code>resolve_live_ips_from_topology()</code> parses <code>terraform output -json</code>; <code>publish_endpoints_to_supabase()</code> writes to <code>public.orchestrator_endpoints</code> (<code>supabase/migrations/20261117000001_orchestrator_endpoints.sql</code>); <code>sync_edge_upstreams()</code> pushes <code>docker/.env.placement</code> to Proxmox Container <code>101</code> and restarts <code>quota-ingress</code>.</p>
+    </div>
+  </article>
+
+  <!-- SLIDE 5 -->
+  <article class="slide-card">
+    <div class="slide-head">
+      <div class="slide-title"><span>05</span>Execution Topologies — 3 Modes &amp; Smart Discovery</div>
+      <span class="badge b-mix">Scenarios Validated · Benchmarks Planned</span>
+    </div>
+    <div class="say">
+      <div class="say-label">What to say</div>
+      <ul>
+        <li><b>All-Edge</b>: Everything stays on Proxmox ($0 cloud cost, fastest on home Wi-Fi).</li>
+        <li><b>Hybrid Split</b>: Gateway + Web App stay at the edge, while the AI Receipt Worker scales onto AWS Milan Spot (~$0.005/hr) and the edge gateway forwards scan calls over to it.</li>
+        <li><b>Cloud Burst</b>: If my home Proxmox box is off or users are out on 4G/5G, all 3 spin up on AWS. The phone app grabs active IPs from Supabase, pings all candidates in parallel, and picks whichever answers first.</li>
+      </ul>
+      <div class="qa"><strong>Quick answer if asked "Are $0.005/hr and 15 ms measured?"</strong> The $0.005/hr rate comes from the <code>t3.small</code> Spot config, while the latency numbers (2 ms / 15 ms / 25 ms) are placeholder estimates in the mock plans—getting real measured numbers is Experiment #3 on my next-steps list.</div>
+    </div>
+    <div class="tech">
+      <div class="tech-label">Technical Reference (Smaller Detail)</div>
+      <p>Scenarios generated by <code>FigaroPlacementAdapter.generate_mock_plan()</code>: <code>all_edge</code> (4 cores, 2048 MB Proxmox), <code>hybrid</code> (2c/1024MB Proxmox + 2c/1024MB AWS <code>t3.small</code> Spot), <code>cloud_burst</code> (2c/2048MB AWS).</p>
+      <p>Docker Compose granularity: <code>aws_spot_node/user_data.sh</code> and <code>proxmox_node/cloud_init.yaml</code> pass exact <code>${services}</code> arguments into <code>docker compose up -d</code> rather than booting unused containers. Mobile discovery in <code>src/services/ai/GeminiReceiptService.ts</code> runs <code>refreshDynamicEndpointsFromSupabase()</code> (<code>800ms</code> timeout, <code>30s</code> cache) followed by <code>Promise.any</code> parallel <code>GET /api/health</code> probes (<code>1200ms</code> timeout).</p>
+    </div>
+  </article>
+
+  <!-- SLIDE 6 -->
+  <article class="slide-card">
+    <div class="slide-head">
+      <div class="slide-title"><span>06</span>Safeguards &amp; Engineering Trade-offs</div>
+      <span class="badge b-ok">Teardown Live-Verified · LXC Live</span>
+    </div>
+    <div class="say">
+      <div class="say-label">What to say</div>
+      <ul>
+        <li><b>Budget Breaker</b>: Every AI call logs token spend to Supabase; at $5.00 the API pauses automatically (HTTP 429). I also have a Python monitor that destroys cloud servers if combined cost hits the cap.</li>
+        <li><b>Auto-Teardown &amp; Idle Timer</b>: Closing the session or shutting down my PC automatically destroys all AWS nodes—even if Proxmox is already powered off. (I ran this live and verified $0 left running in AWS.)</li>
+        <li><b>QEMU VM vs. LXC Lesson</b>: Running Proxmox inside VMware hid hardware virtualization (VT-x) from normal QEMU VMs. I solved that by switching Proxmox edge to lightweight Linux containers (LXC), which boot fast with Docker inside.</li>
+      </ul>
+      <div class="qa"><strong>Quick answer if asked "What if your laptop loses Wi-Fi suddenly?"</strong> AWS Spot instances run a local cron timer: if they stop getting my heartbeat ping for 15 minutes (or hit 4 hours total), they shut themselves down and terminate automatically.</div>
+    </div>
+    <div class="tech">
+      <div class="tech-label">Technical Reference (Smaller Detail)</div>
+      <p>1) Budget Guard: <code>supabase/migrations/20261106000001_ai_token_ledger.sql</code> RPC <code>record_gemini_tokens</code> + <code>infra/scripts/cost_guard.py</code> + <code>infra/scripts/terraform_actuator.py</code> (unified to clean both <code>infra/</code> and <code>infra/terraform/</code>).</p>
+      <p>2) Lifecycle Safety: <code>scripts/session_guard.py</code> hooks Win32 <code>SetConsoleCtrlHandler</code> (close/logoff/shutdown), resolves cloud IP via <code>get_topology()</code>, pings <code>/api/heartbeat</code> (isolated from <code>/api/health</code> Docker healthchecks in <code>server/src/index.ts</code>), and runs <code>scripts/destroy_all.py</code> (which falls back to <code>-target=</code> AWS destroy when Proxmox is offline). AWS <code>user_data.sh</code> sets <code>TIMEOUT_SEC=900</code>, boot grace <code>1200</code>, <code>MAX_TTL_SEC=14400</code> with <code>instance_initiated_shutdown_behavior = "terminate"</code> and <code>/tmp:/tmp</code> bind-mount.</p>
+      <p>3) Nested Virtualization: QEMU VM 100 hit KVM error (solved via <code>start_vm_no_kvm.py</code> setting <code>kvm=0</code>) and missing boot image; replaced on host with Ubuntu 24.04 LXC Container <code>101</code> (<code>192.168.178.128</code>, <code>onboot: 1</code>, systemd <code>quota-pay-compose.service</code>), and <code>infra/modules/proxmox_node/main.tf</code> now defaults to <code>proxmox_virtual_environment_container</code> (<code>virtualization_type = "lxc"</code>, <code>nesting = true</code>; validated offline).</p>
+    </div>
+  </article>
+
+  <!-- SLIDE 7 -->
+  <article class="slide-card">
+    <div class="slide-head">
+      <div class="slide-title"><span>07</span>Agentic AI Control Plane — Executable Prompt Work</div>
+      <span class="badge b-ok">Live Gemini Run Verified</span>
+    </div>
+    <div class="say">
+      <div class="say-label">What to say</div>
+      <ul>
+        <li>Besides static prompts, I built a working AI orchestrator script that takes an English goal plus live cluster health telemetry.</li>
+        <li>Safety first: the AI only <b>proposes</b> JSON constraints; Pydantic schema checks and <code>terraform validate</code> decide if it's legal, and nothing touches live servers without an explicit apply flag.</li>
+        <li>Show the real test I ran: when I typed <i>"Keep UI on Proxmox, scale AI on Spot under $0.01/hr"</i> while Proxmox was powered off, Gemini noticed Edge was unreachable, failed over to Cloud Burst under budget, and wrote a full reasoning audit file.</li>
+      </ul>
+      <div class="qa"><strong>Quick answer if asked "What happens if Gemini is offline or fails?"</strong> I put a deterministic keyword parser underneath as a fallback, so demos and tests still work offline or if an API call fails.</div>
+    </div>
+    <div class="tech">
+      <div class="tech-label">Technical Reference (Smaller Detail)</div>
+      <p>Implemented in <code>src/orchestrator/agent_orchestrator.py</code> (<code>AgenticOrchestrator</code>, <code>SYSTEM_PROMPT</code>) exposed via <code>scripts/deploy_nodes.py --prompt "..."</code>. Calls Gemini REST API (<code>gemini-3.8-flash</code> / <code>gemini-flash-latest</code> / <code>gemini-3.5-flash</code>, <code>responseMimeType: "application/json"</code>, filtering <code>thought</code> parts) with <code>_deterministic_prompt_to_decision()</code> fallback.</p>
+      <p>Live verification on 2026-11-17 produced <code>engine_used: gemini:gemini-3.8-flash</code>, <code>scenario: cloud_burst</code>, audit saved in <code>docs/last_agent_decision.md</code>. Automatic error-diagnosis retry loop on failed <code>terraform apply</code> (illustrated dashed) is planned; currently <code>test_placement.py</code> runs 5 unit/integration checks offline &amp; online.</p>
+    </div>
+  </article>
+
+  <!-- SLIDE 8 -->
+  <article class="slide-card">
+    <div class="slide-head">
+      <div class="slide-title"><span>08</span>Choosing Where to Run — Proxmox Edge vs. AWS Spot</div>
+      <span class="badge b-mix">Solo Now · Shared GPU Team Next</span>
+    </div>
+    <div class="say">
+      <div class="say-label">What to say</div>
+      <ul>
+        <li><b>For solo testing right now, Proxmox is easier and cheaper</b>: zero cloud billing while I break and fix containers, fast local restarts, and everything I test in Proxmox LXC carries straight over to the shared GPU server.</li>
+        <li><b>AWS Spot is better when external access is needed</b>: anyone can reach its public IP over 4G/5G without port-forwarding my home router, though I have to tear it down cleanly after each session because it bills per hour.</li>
+        <li><b>Once teammates join + I have the GPU server and FIGARO</b>: move the Edge workload onto the shared GPU server (running FIGARO and heavy compute at $0/hr for everyone) and pair it with AWS in <b>Hybrid</b> mode for public team access and shared state.</li>
+      </ul>
+      <div class="qa"><strong>Quick answer if asked "What changes when teammates start running Terraform with you?"</strong> Right now Terraform state sits locally on my laptop; once teammates deploy together, I'll switch <code>terraform.tfstate</code> to a remote backend (like S3) with state locking so two people can't overwrite each other's changes.</div>
+    </div>
+    <div class="tech">
+      <div class="tech-label">Technical Reference (Smaller Detail)</div>
+      <p><b>Now (Solo):</b> <code>python scripts/deploy_nodes.py --scenario=all_edge</code> on Proxmox LXC (<code>$0/hr</code>, sub-second local container reload); use <code>--scenario=cloud_burst</code> or <code>hybrid</code> (~<code>$0.005–$0.015/hr</code> Spot) briefly for remote tests, followed by <code>scripts/destroy_all.py</code>.</p>
+      <p><b>Next (Team + Powerful GPU Server + FIGARO):</b> Configure Terraform <code>backend "s3"</code> so state is shared cleanly across collaborators, target the shared GPU host via SSH/Docker or Proxmox API with NVIDIA runtime/device passthrough in <code>PlacementPlan</code>, and keep AWS <code>eu-south-1</code> Spot strictly for elastic burst &amp; external teammate/mobile routing.</p>
+    </div>
+  </article>
+
+  <!-- SLIDE 9 -->
+  <article class="slide-card">
+    <div class="slide-head">
+      <div class="slide-title"><span>09</span>Planned Next Steps — Clear Separation</div>
+      <span class="badge b-plan">Planned Work Only</span>
+    </div>
+    <div class="say">
+      <div class="say-label">What to say</div>
+      <ul>
+        <li>Keep this clear and honest: everything through Slide 8 is built/analyzed; Slide 9 is what I plan to tackle once I get access to the FIGARO solver codebase and shared GPU server.</li>
+        <li>Good questions to ask at the end: 1) Which exact telemetry metrics &amp; output format should I expect from FIGARO? 2) Should I set up shared S3 Terraform state first before teammates onboard?</li>
+      </ul>
+    </div>
+    <div class="tech">
+      <div class="tech-label">Technical Reference (Smaller Detail)</div>
+      <p>01) Closed-loop solver polling live <code>ClusterTelemetrySnapshot</code> via <code>FIGARO_MODE=python|http|cli</code>. 02) Poll AWS IMDSv2 Spot interruption endpoint (<code>/latest/meta-data/spot/instance-action</code>) on 2-min notice and trigger edge upstream failover. 03) Automated benchmark measuring Terraform apply cold-start, container build vs. pull times, EC2 idle cron cutoff (<code>900s</code>), and p50/p99 latency across all 3 scenarios. 04) Add shared remote Terraform state (<code>S3 backend</code>), GPU host allocation fields in <code>NodeAllocation</code>, and extend <code>.github/workflows/deploy.yml</code> to publish pre-built <code>frontend</code>, <code>ai-proxy</code>, and <code>ingress</code> images to <code>ghcr.io</code>.</p>
+    </div>
+  </article>
+
+  <!-- DEMO COMMANDS -->
+  <section class="commands">
+    <h2>Live Demo Commands (During or After Presentation)</h2>
+    <div class="cmd-row">
+      <div class="cmd-desc">1. Run all 5 automated orchestration &amp; Terraform validation checks:</div>
+      <pre>python -u scripts/test_placement.py</pre>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd-desc">2. Show live Gemini AI planning + audit file generation (safe dry preparation, no AWS cost):</div>
+      <pre>python -u scripts/deploy_nodes.py --prompt "Keep edge web frontend fast on Proxmox, scale AI on AWS Spot under 0.01/hr" --prepare-only</pre>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd-desc">3. Show the readable AI reasoning &amp; generated Terraform inputs:</div>
+      <pre>type docs\last_agent_decision.md   (and inspect infra\terraform.tfvars.json)</pre>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd-desc">4. Verify clean $0 AWS teardown anytime:</div>
+      <pre>python -u scripts/destroy_all.py</pre>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd-desc">5. Plug in the real FIGARO codebase later (zero core code rewrites):</div>
+      <pre>set FIGARO_MODE=python  &amp;  set FIGARO_ENTRYPOINT=figaro.solver:solve   (or CLI / HTTP mode)</pre>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  document.getElementById('toggleTech').onclick = function () {
+    document.body.classList.toggle('hide-tech');
+  };
+</script>
+</body>
+</html>

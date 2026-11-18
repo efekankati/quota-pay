@@ -8,9 +8,10 @@ terraform {
 }
 
 # =============================================================================
-# 1. Cloud-Init Snippet File Registration on Proxmox Datastore
+# 1. Cloud-Init Snippet File Registration on Proxmox Datastore (QEMU mode)
 # =============================================================================
 resource "proxmox_virtual_environment_file" "cloud_init" {
+  count        = var.virtualization_type == "qemu" ? 1 : 0
   content_type = "snippets"
   datastore_id = "local"
   node_name    = var.node_name
@@ -25,9 +26,62 @@ resource "proxmox_virtual_environment_file" "cloud_init" {
 }
 
 # =============================================================================
-# 2. Virtual Machine Definition with Dynamic Resources & Cloud-Init
+# 2A. Native LXC Container Definition (Works cleanly without nested VT-x)
+# =============================================================================
+resource "proxmox_virtual_environment_container" "edge_lxc" {
+  count         = var.virtualization_type == "lxc" ? 1 : 0
+  node_name     = var.node_name
+  description   = "Quota Pay Edge LXC (${join(", ", var.services)}) [FIGARO Orchestrated]"
+  tags          = ["quota-pay", "edge", "figaro"]
+  start_on_boot = true
+  unprivileged  = false
+
+  features {
+    nesting = true
+  }
+
+  cpu {
+    cores = var.cores
+  }
+
+  memory {
+    dedicated = var.memory_mb
+  }
+
+  disk {
+    datastore_id = "local-lvm"
+    size         = var.disk_gb
+  }
+
+  network_interface {
+    name   = "eth0"
+    bridge = "vmbr0"
+  }
+
+  operating_system {
+    template_file_id = var.lxc_template
+    type             = "ubuntu"
+  }
+
+  initialization {
+    hostname = coalesce(var.vm_name, "quota-edge-${var.node_name}")
+    ip_config {
+      ipv4 {
+        address = "dhcp"
+      }
+    }
+  }
+
+  provisioner "local-exec" {
+    command = "python ${path.module}/scripts/bootstrap_lxc.py ${self.vm_id} ${var.git_branch} ${var.compose_target} ${join(" ", var.services)}"
+  }
+}
+
+# =============================================================================
+# 2B. Virtual Machine Definition with Dynamic Resources & Cloud-Init (QEMU mode)
 # =============================================================================
 resource "proxmox_virtual_environment_vm" "edge_node" {
+  count       = var.virtualization_type == "qemu" ? 1 : 0
   name        = coalesce(var.vm_name, "quota-edge-${var.node_name}")
   node_name   = var.node_name
   description = "Quota Pay Edge Node (${join(", ", var.services)}) [FIGARO Orchestrated]"
@@ -61,10 +115,10 @@ resource "proxmox_virtual_environment_vm" "edge_node" {
         address = "dhcp"
       }
     }
-    user_data_file_id = proxmox_virtual_environment_file.cloud_init.id
+    user_data_file_id = proxmox_virtual_environment_file.cloud_init[0].id
   }
 
   provisioner "local-exec" {
-    command = "python -c \"import urllib.request, ssl; ctx = ssl._create_unverified_context(); req = urllib.request.Request('https://192.168.178.125:8006/api2/json/nodes/${self.node_name}/qemu/${self.vm_id}/config', data=b'kvm=0', headers={'Authorization': 'PVEAPIToken=root@pam!terraform=98410344-21d0-4c11-b9e6-021235b64445'}, method='PUT'); urllib.request.urlopen(req, context=ctx); req2 = urllib.request.Request('https://192.168.178.125:8006/api2/json/nodes/${self.node_name}/qemu/${self.vm_id}/status/start', data=b'', headers={'Authorization': 'PVEAPIToken=root@pam!terraform=98410344-21d0-4c11-b9e6-021235b64445'}, method='POST'); urllib.request.urlopen(req2, context=ctx)\""
+    command = "python ${path.module}/scripts/start_vm_no_kvm.py ${self.node_name} ${self.vm_id}"
   }
 }

@@ -179,7 +179,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
   }
 
   // Calculate live collection totals
-  let collectedAmount = 0;
+  let rawCollectedAmount = 0;
   let pendingAmount = 0;
   let paidCount = 0;
   let friendsRemainingTotal = 0;
@@ -197,7 +197,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
       : (p.paidAmount || breakdown.totalDue);
 
     if (isParticipantSettled) {
-      collectedAmount += settledVal;
+      rawCollectedAmount += settledVal;
       paidCount++;
       if (!isOrg) {
         friendsCollectedTotal += settledVal;
@@ -211,6 +211,9 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
   });
 
   const grandTotal = bill.taxSummary.grandTotal;
+  // Guard against any collection overflow display anomalies
+  const collectedAmount = Math.min(grandTotal, Math.round(rawCollectedAmount * 100) / 100);
+
   // Don't change status to settled unless ALL the money has been covered
   const allMoneyCovered =
     grandTotal > 0 &&
@@ -262,7 +265,21 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
         onBack={onBack}
       />
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        style={[
+          styles.scrollView,
+          Platform.OS === 'web' &&
+            ({
+              overflowY: 'auto',
+              WebkitOverflowScrolling: 'touch',
+              touchAction: 'pan-y',
+            } as any),
+        ]}
+        contentContainerStyle={[styles.scrollContent, Platform.OS === 'web' && { flexGrow: 1 }]}
+        nestedScrollEnabled={true}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={true}
+      >
         {/* Settlement Overview Card */}
         <View
           style={[
@@ -517,6 +534,13 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    height: Platform.OS === 'web' ? '100%' : undefined,
+    maxHeight: Platform.OS === 'web' ? '100%' : undefined,
+    overflow: 'hidden',
+  },
+  scrollView: {
+    flex: 1,
+    minHeight: 0,
   },
   empty: {
     flex: 1,
@@ -526,6 +550,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingTop: SPACING.md,
     paddingBottom: SPACING.xxxl,
+    ...(Platform.OS === 'web' ? ({ touchAction: 'pan-y' } as any) : {}),
   },
   heroCard: {
     marginHorizontal: SPACING.lg,

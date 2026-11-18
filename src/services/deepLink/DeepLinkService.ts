@@ -589,7 +589,8 @@ export class DeepLinkService {
         splitIdFromPath;
 
       const mode = parsed.searchParams.get('mode');
-      const isGuest = mode === 'guest' || Boolean(claimId) || (!claimId && Boolean(billId));
+      const isOrganizerExplicit = mode === 'host' || mode === 'organizer' || parsed.searchParams.get('role') === 'host';
+      const isGuest = !isOrganizerExplicit && (mode === 'guest' || Boolean(claimId) || (!claimId && Boolean(billId)));
 
       // Check both compact &d= and legacy &data=
       const dataParam = parsed.searchParams.get('d') || parsed.searchParams.get('data');

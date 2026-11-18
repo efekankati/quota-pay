@@ -23,7 +23,7 @@ write_files:
       Type=oneshot
       RemainAfterExit=yes
       WorkingDirectory=/opt/quota-pay
-      ExecStart=/usr/bin/docker compose -f docker/${compose_target} up -d
+      ExecStart=/usr/bin/docker compose -f docker/${compose_target} up -d ${join(" ", services)}
       ExecStop=/usr/bin/docker compose -f docker/${compose_target} down
 
       [Install]

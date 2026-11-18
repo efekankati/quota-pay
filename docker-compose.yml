@@ -24,6 +24,8 @@ services:
       - SPOT_HOURLY_RATE_USD=${SPOT_HOURLY_RATE_USD:-0.005}
     expose:
       - "3000"
+    volumes:
+      - /tmp:/tmp
     deploy:
       resources:
         limits:

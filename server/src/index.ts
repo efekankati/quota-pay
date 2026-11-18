@@ -286,6 +286,23 @@ export function createQuotaServer() {
         return;
       }
 
+      // Dead man's switch: only an explicit operator heartbeat refreshes the file.
+      // Docker HEALTHCHECK and client /api/health probes must NOT count, or the
+      // host watchdog would never fire on an idle instance.
+      if ((method === 'GET' || method === 'POST') && pathname === '/api/heartbeat') {
+        try {
+          (fs as any).writeFileSync('/tmp/quota_last_heartbeat', Date.now().toString());
+        } catch {
+          // ignore on systems where /tmp is inaccessible
+        }
+        sendJson(res, 200, {
+          status: 'ok',
+          alive: true,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
       // 1. Health & FinOps Telemetry Endpoint
       if (method === 'GET' && pathname === '/api/health') {
         const ledger = SupabaseTokenLedger.getLedgerStatusFast();
