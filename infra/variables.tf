@@ -4,14 +4,24 @@
 
 variable "placement_plan" {
   type = map(object({
-    target_provider = string # "proxmox" or "aws"
-    target_node     = optional(string)
-    cpu_cores       = number
-    memory_mb       = number
-    services        = list(string) # e.g. ["quota-ai-proxy"]
+    target_provider     = string # "proxmox" or "aws"
+    target_node         = optional(string)
+    cpu_cores           = number
+    memory_mb           = number
+    disk_gb             = optional(number, 8)
+    virtualization_type = optional(string, "lxc")
+    enable_firewall     = optional(bool, true)
+    allowed_ports       = optional(list(number), [80, 443])
+    services            = list(string) # e.g. ["quota-ai-proxy"]
   }))
   description = "Unified multi-node placement plan produced by FIGARO orchestrator"
   default     = {}
+}
+
+variable "enable_aws" {
+  type        = bool
+  description = "Explicit opt-in flag to allow AWS Spot provisioning (Proxmox-first default: false)"
+  default     = false
 }
 
 # --- AWS Provider Configuration ---
@@ -90,6 +100,24 @@ variable "proxmox_ssh_private_key_file" {
   type        = string
   description = "Path to SSH private key file for Proxmox root authentication"
   default     = "~/.ssh/id_ed25519"
+}
+
+variable "proxmox_allowed_cidrs" {
+  type        = list(string)
+  description = "CIDR allowlist for Proxmox edge service ingress firewall rules (empty allows local bridge traffic)"
+  default     = ["192.168.178.0/24"]
+}
+
+variable "proxmox_ssh_allowed_cidr" {
+  type        = string
+  description = "CIDR allowlist for Proxmox edge SSH administration (port 22)"
+  default     = "192.168.178.0/24"
+}
+
+variable "proxmox_disable_password_auth" {
+  type        = bool
+  description = "Disable SSH password authentication on provisioned Proxmox edge nodes"
+  default     = true
 }
 
 variable "git_branch" {

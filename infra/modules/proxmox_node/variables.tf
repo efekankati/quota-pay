@@ -63,3 +63,33 @@ variable "git_branch" {
   description = "Git branch cloned inside the bootstrapped Proxmox node"
   default     = "main"
 }
+
+variable "enable_firewall" {
+  type        = bool
+  description = "Enable Proxmox VE per-container/VM firewall with default-drop ingress policy"
+  default     = true
+}
+
+variable "allowed_ports" {
+  type        = list(number)
+  description = "TCP service ports permitted inbound through Proxmox firewall"
+  default     = [80, 443]
+}
+
+variable "allowed_cidrs" {
+  type        = list(string)
+  description = "Allowed source CIDRs for inbound service traffic"
+  default     = ["192.168.178.0/24"]
+}
+
+variable "ssh_allowed_cidr" {
+  type        = string
+  description = "Restricted management CIDR allowed to access SSH (TCP/22)"
+  default     = "192.168.178.0/24"
+}
+
+variable "disable_password_auth" {
+  type        = bool
+  description = "Enforce SSH key-only authentication inside provisioned Proxmox nodes"
+  default     = true
+}

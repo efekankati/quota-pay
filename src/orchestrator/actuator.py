@@ -116,6 +116,8 @@ class TerraformActuator:
         plan: PlacementPlan,
         output_path: Optional[Path] = None,
         exclude_proxmox: bool = False,
+        enable_aws: Optional[bool] = None,
+        extra_vars: Optional[Dict[str, Any]] = None,
     ) -> Path:
         """
         Serializes the PlacementPlan into infra/terraform.tfvars.json for Terraform consumption.
@@ -124,13 +126,15 @@ class TerraformActuator:
         target = output_path or (self.infra_dir / "terraform.tfvars.json")
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        tfvars_data = plan.to_terraform_vars()
+        tfvars_data = plan.to_terraform_vars(enable_aws=enable_aws)
         if exclude_proxmox and isinstance(tfvars_data.get("placement_plan"), dict):
             tfvars_data["placement_plan"] = {
                 k: v
                 for k, v in tfvars_data["placement_plan"].items()
                 if v.get("target_provider") != "proxmox"
             }
+        if extra_vars:
+            tfvars_data.update(extra_vars)
 
         with open(target, "w", encoding="utf-8") as f:
             json.dump(tfvars_data, f, indent=2)
@@ -234,12 +238,45 @@ AWS_REGION=eu-south-1
         """Runs terraform validate."""
         return self._run_tf_command(["validate"])
 
-    def plan(self, var_file: Optional[str] = "terraform.tfvars.json") -> Dict[str, Any]:
-        """Runs terraform plan."""
-        args = ["plan"]
+    def plan(self, var_file: Optional[str] = "terraform.tfvars.json", out_file: Optional[str] = None) -> Dict[str, Any]:
+        """Runs terraform plan (optionally writing a binary plan file)."""
+        args = ["plan", "-input=false"]
         if var_file:
             args.append(f"-var-file={var_file}")
+        if out_file:
+            args.append(f"-out={out_file}")
         return self._run_tf_command(args, timeout_sec=60)
+
+    def plan_json(self, var_file: Optional[str] = "terraform.tfvars.json") -> Dict[str, Any]:
+        """
+        Runs `terraform plan -out=tfplan.binary` followed by `terraform show -json tfplan.binary`
+        so pre-execution auditors can inspect exact planned resource changes in JSON.
+        """
+        plan_bin = self.infra_dir / "tfplan.binary"
+        plan_res = self.plan(var_file=var_file, out_file=plan_bin.name)
+        if not plan_res["success"]:
+            plan_bin.unlink(missing_ok=True)
+            return {
+                **plan_res,
+                "plan_json": None,
+            }
+
+        show_res = self._run_tf_command(["show", "-json", plan_bin.name], timeout_sec=30)
+        plan_bin.unlink(missing_ok=True)
+        parsed: Optional[Dict[str, Any]] = None
+        if show_res["success"] and show_res["stdout"]:
+            try:
+                parsed = json.loads(show_res["stdout"])
+            except json.JSONDecodeError:
+                parsed = None
+        return {
+            "success": show_res["success"] and parsed is not None,
+            "returncode": show_res["returncode"],
+            "stdout": plan_res["stdout"],
+            "stderr": show_res["stderr"] or plan_res["stderr"],
+            "command": f"{plan_res['command']} && {show_res['command']}",
+            "plan_json": parsed,
+        }
 
     def apply(self, var_file: Optional[str] = "terraform.tfvars.json", auto_approve: bool = True) -> Dict[str, Any]:
         """Runs terraform apply."""

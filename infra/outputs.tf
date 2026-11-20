@@ -37,5 +37,6 @@ output "placement_topology" {
     total_nodes = length(module.proxmox_nodes) + length(module.aws_spot_nodes)
     proxmox_vms = keys(module.proxmox_nodes)
     aws_spots   = keys(module.aws_spot_nodes)
+    aws_enabled = var.enable_aws
   }
 }

@@ -35,10 +35,12 @@ provider "proxmox" {
 }
 
 # =============================================================================
-# 2. Shared AWS Networking (Dynamically provisioned if any node is placed on AWS)
+# 2. Shared AWS Networking (Opt-in via enable_aws = true AND AWS node placed)
 # =============================================================================
 locals {
-  has_aws_nodes = length([for k, v in var.placement_plan : k if v.target_provider == "aws"]) > 0
+  proxmox_nodes = { for k, v in var.placement_plan : k => v if v.target_provider == "proxmox" }
+  aws_nodes     = var.enable_aws ? { for k, v in var.placement_plan : k => v if v.target_provider == "aws" } : {}
+  has_aws_nodes = length(local.aws_nodes) > 0
 }
 
 resource "aws_vpc" "quota_vpc" {
@@ -148,24 +150,31 @@ resource "aws_security_group" "quota_sg" {
 # 3. Dynamic Node Placement Engine (Proxmox VE + AWS Spot)
 # =============================================================================
 
-# Module 1: Proxmox VE Edge Nodes
+# Module 1: Proxmox VE Edge Nodes (Primary Proxmox-First Target)
 module "proxmox_nodes" {
   source   = "./modules/proxmox_node"
-  for_each = { for k, v in var.placement_plan : k => v if v.target_provider == "proxmox" }
+  for_each = local.proxmox_nodes
 
-  node_name      = each.value.target_node != null ? each.value.target_node : "pve"
-  vm_name        = "quota-${each.key}"
-  cores          = each.value.cpu_cores
-  memory_mb      = each.value.memory_mb
-  services       = each.value.services
-  compose_target = "docker-compose.edge.yml"
-  git_branch     = var.git_branch
+  node_name             = each.value.target_node != null ? each.value.target_node : "pve"
+  vm_name               = "quota-${each.key}"
+  cores                 = each.value.cpu_cores
+  memory_mb             = each.value.memory_mb
+  disk_gb               = coalesce(each.value.disk_gb, 8)
+  virtualization_type   = coalesce(each.value.virtualization_type, "lxc")
+  enable_firewall       = coalesce(each.value.enable_firewall, true)
+  allowed_ports         = coalesce(each.value.allowed_ports, [80, 443])
+  allowed_cidrs         = var.proxmox_allowed_cidrs
+  ssh_allowed_cidr      = var.proxmox_ssh_allowed_cidr
+  disable_password_auth = var.proxmox_disable_password_auth
+  services              = each.value.services
+  compose_target        = "docker-compose.edge.yml"
+  git_branch            = var.git_branch
 }
 
-# Module 2: AWS Spot Cloud Nodes
+# Module 2: AWS Spot Cloud Nodes (Optional Secondary Target — requires enable_aws = true)
 module "aws_spot_nodes" {
   source   = "./modules/aws_spot_node"
-  for_each = { for k, v in var.placement_plan : k => v if v.target_provider == "aws" }
+  for_each = local.aws_nodes
 
   name              = "quota-${each.key}"
   instance_type     = each.value.cpu_cores > 1 ? "t3.small" : "t3.micro"

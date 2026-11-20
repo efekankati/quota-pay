@@ -7,10 +7,20 @@
 {$DOMAIN_NAME::80} {
   encode zstd gzip
 
-  # Health check endpoint for container orchestrators and load balancers
+  # Health check endpoints for container orchestrators, agents, and load balancers
+  respond /healthz 200 {
+    body "ok"
+  }
+
   respond /ingress-health 200 {
     body "quota-ingress OK"
   }
+
+  # Static asset caching for faster frontend delivery
+  @staticAssets {
+    path *.js *.css *.png *.jpg *.jpeg *.webp *.svg *.woff2 *.ico
+  }
+  header @staticAssets Cache-Control "public, max-age=86400, immutable"
 
   # Route backend API calls (Receipt OCR, Token Ledger, Health)
   handle /api/* {

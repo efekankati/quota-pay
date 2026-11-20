@@ -42,6 +42,19 @@ class NodeAllocation(BaseModel):
     )
     cpu_cores: int = Field(ge=1, le=64, description="Virtual or physical CPU cores")
     memory_mb: int = Field(ge=256, le=131072, description="RAM in megabytes")
+    disk_gb: int = Field(default=8, ge=4, le=2048, description="Root disk size in gigabytes")
+    virtualization_type: str = Field(
+        default="lxc",
+        description="Proxmox virtualization mode: 'lxc' (nested-VT-x safe default) or 'qemu'",
+    )
+    enable_firewall: bool = Field(
+        default=True,
+        description="Enable Proxmox VE default-drop ingress firewall on this node",
+    )
+    allowed_ports: List[int] = Field(
+        default_factory=lambda: [80, 443],
+        description="Inbound TCP service ports allowed through the node firewall",
+    )
     services: List[ServiceType] = Field(
         min_length=1,
         description="Services placed on this compute node"
@@ -87,23 +100,35 @@ class PlacementPlan(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
-    def to_terraform_vars(self) -> Dict[str, Any]:
+    def to_terraform_vars(self, enable_aws: Optional[bool] = None) -> Dict[str, Any]:
         """
         Serializes the plan into the exact HCL type definition expected by
         variable 'placement_plan' in infra/main.tf.
         """
         plan_dict: Dict[str, Any] = {}
+        has_aws = False
         for node_id, node in self.nodes.items():
+            provider_val = node.target_provider if isinstance(node.target_provider, str) else node.target_provider.value
+            if provider_val == TargetProvider.AWS.value:
+                has_aws = True
             plan_dict[node_id] = {
-                "target_provider": node.target_provider,
+                "target_provider": provider_val,
                 "target_node": node.target_node,
                 "cpu_cores": node.cpu_cores,
                 "memory_mb": node.memory_mb,
+                "disk_gb": node.disk_gb,
+                "virtualization_type": node.virtualization_type,
+                "enable_firewall": node.enable_firewall,
+                "allowed_ports": list(node.allowed_ports),
                 "services": [
                     s if isinstance(s, str) else s.value for s in node.services
                 ],
             }
-        return {"placement_plan": plan_dict}
+        resolved_enable_aws = has_aws if enable_aws is None else bool(enable_aws)
+        return {
+            "enable_aws": resolved_enable_aws,
+            "placement_plan": plan_dict,
+        }
 
 
 class PlacementDecision(BaseModel):

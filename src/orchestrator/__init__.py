@@ -16,6 +16,12 @@ from .schema import (
 )
 from .figaro_adapter import FigaroPlacementAdapter
 from .figaro_connector import FigaroConnector
+from .figaro_cli_bridge import (
+    FigaroCLIBridge,
+    FigaroCLIExecution,
+    FigaroPlacementDirective,
+    parse_nl_infrastructure_intent,
+)
 from .agent_orchestrator import AgenticOrchestrator
 from .actuator import TerraformActuator
 
@@ -30,6 +36,10 @@ __all__ = [
     "ServiceType",
     "FigaroPlacementAdapter",
     "FigaroConnector",
+    "FigaroCLIBridge",
+    "FigaroCLIExecution",
+    "FigaroPlacementDirective",
+    "parse_nl_infrastructure_intent",
     "AgenticOrchestrator",
     "TerraformActuator",
 ]
