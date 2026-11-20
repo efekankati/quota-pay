@@ -1,0 +1,337 @@
+{
+  "run_id": "run-d528c880d8",
+  "started_at": "2026-11-20T18:36:30.940739+00:00",
+  "completed_at": "2026-11-20T18:36:42.915127+00:00",
+  "orchestration_engine": "langgraph.StateGraph",
+  "execution_mode": "dry-run",
+  "proxmox_first": true,
+  "enable_aws": false,
+  "status": "completed",
+  "prompt": "Deploy Quota Pay full stack on Proxmox node pve with 4 cores, 2048MB RAM, and 16GB disk",
+  "retry_count": 0,
+  "max_retries": 3,
+  "figaro_cli_execution": {
+    "request_id": "figaro-req-ff31dbe66f",
+    "mode": "mock",
+    "command": null,
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": "",
+    "duration_ms": 0.0,
+    "fallback_reason": "No external FIGARO CLI command configured; using Proxmox-first local mock.",
+    "timestamp": "2026-11-20T18:36:33.812867+00:00"
+  },
+  "directive": {
+    "directive_id": "dir-41bcf651dd",
+    "source": "mock-proxmox-first",
+    "prompt": "Deploy Quota Pay full stack on Proxmox node pve with 4 cores, 2048MB RAM, and 16GB disk",
+    "scenario": "all_edge",
+    "enable_aws": false,
+    "target_proxmox_node": "pve",
+    "preferred_virtualization": "lxc",
+    "requested_node_count": 1,
+    "requested_cpu_cores": 4,
+    "requested_memory_mb": 2048,
+    "requested_disk_gb": 16,
+    "requested_services": [
+      "quota-ingress",
+      "quota-web-frontend",
+      "quota-ai-proxy"
+    ],
+    "allowed_ports": [
+      80,
+      443
+    ],
+    "require_firewall": true,
+    "disable_password_auth": true,
+    "constraints": {
+      "max_hourly_budget_usd": 0.0,
+      "max_latency_ms": 10.0,
+      "prefer_edge": true,
+      "allow_cloud_burst": false,
+      "required_services": [
+        "quota-ingress",
+        "quota-web-frontend",
+        "quota-ai-proxy"
+      ],
+      "objective": "proxmox_first_zero_cloud_cost"
+    },
+    "telemetry": {
+      "proxmox_reachable": false,
+      "proxmox_host": "192.168.178.125",
+      "proxmox_available_cores": 4,
+      "proxmox_available_memory_mb": 2048,
+      "aws_region": "eu-south-1",
+      "aws_spot_hourly_usd": 0.005,
+      "current_token_spend_usd": 0.0,
+      "max_budget_usd": 5.0,
+      "budget_remaining_usd": 5.0,
+      "timestamp": "2026-11-20T18:36:33.811806+00:00"
+    },
+    "placement_plan": {
+      "version": "1.0.0",
+      "scenario": "all_edge",
+      "nodes": {
+        "edge-primary": {
+          "target_provider": "proxmox",
+          "target_node": "pve",
+          "cpu_cores": 4,
+          "memory_mb": 2048,
+          "disk_gb": 16,
+          "virtualization_type": "lxc",
+          "enable_firewall": true,
+          "allowed_ports": [
+            80,
+            443
+          ],
+          "services": [
+            "quota-ingress",
+            "quota-web-frontend",
+            "quota-ai-proxy"
+          ],
+          "compose_target": "docker-compose.edge.yml",
+          "ip_address": null,
+          "metadata": {
+            "role": "proxmox-primary-edge",
+            "cost_usd_hourly": 0.0
+          }
+        }
+      },
+      "metadata": {
+        "algorithm": "FIGARO-ProxmoxFirst-LocalMock",
+        "estimated_cost_usd_hourly": 0.0,
+        "estimated_latency_ms": 2.0,
+        "aws_enabled": false
+      },
+      "created_at": "2026-11-20T18:36:33.812967+00:00"
+    },
+    "cli_execution": {
+      "request_id": "figaro-req-ff31dbe66f",
+      "mode": "mock",
+      "command": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "duration_ms": 0.0,
+      "fallback_reason": "No external FIGARO CLI command configured; using Proxmox-first local mock.",
+      "timestamp": "2026-11-20T18:36:33.812867+00:00"
+    },
+    "notes": [
+      "No external FIGARO CLI command configured; using Proxmox-first local mock."
+    ]
+  },
+  "authored_artifacts": {
+    "hcl_path": "C:\\Users\\efeka\\.gemini\\antigravity-ide\\scratch\\quota\\infra\\agent_generated.tf",
+    "tfvars_path": "C:\\Users\\efeka\\.gemini\\antigravity-ide\\scratch\\quota\\infra\\terraform.tfvars.json",
+    "placement_env_path": "C:\\Users\\efeka\\.gemini\\antigravity-ide\\scratch\\quota\\docker\\.env.placement",
+    "tfvars_data": {
+      "enable_aws": false,
+      "placement_plan": {
+        "edge-primary": {
+          "target_provider": "proxmox",
+          "target_node": "pve",
+          "cpu_cores": 4,
+          "memory_mb": 2048,
+          "disk_gb": 16,
+          "virtualization_type": "lxc",
+          "enable_firewall": true,
+          "allowed_ports": [
+            80,
+            443
+          ],
+          "services": [
+            "quota-ingress",
+            "quota-web-frontend",
+            "quota-ai-proxy"
+          ]
+        }
+      },
+      "proxmox_allowed_cidrs": [
+        "192.168.178.0/24"
+      ],
+      "proxmox_ssh_allowed_cidr": "192.168.178.0/24",
+      "proxmox_disable_password_auth": true
+    }
+  },
+  "plan_diff": {
+    "source": "static_tfvars_preview",
+    "terraform_validate_passed": true,
+    "resources_to_create": [
+      "module.proxmox_nodes[\"edge-primary\"].proxmox_virtual_environment_container.edge_lxc[0]",
+      "module.proxmox_nodes[\"edge-primary\"].proxmox_virtual_environment_firewall_options.edge_fw_options[0]",
+      "module.proxmox_nodes[\"edge-primary\"].proxmox_virtual_environment_firewall_rules.edge_fw_rules[0]"
+    ],
+    "resources_to_update": [],
+    "resources_to_destroy": [],
+    "proxmox_resources_planned": [
+      "module.proxmox_nodes[\"edge-primary\"].proxmox_virtual_environment_container.edge_lxc[0]",
+      "module.proxmox_nodes[\"edge-primary\"].proxmox_virtual_environment_firewall_options.edge_fw_options[0]",
+      "module.proxmox_nodes[\"edge-primary\"].proxmox_virtual_environment_firewall_rules.edge_fw_rules[0]"
+    ],
+    "aws_resources_planned": [],
+    "raw_plan_excerpt": "Static preview (Proxmox API offline): 3 Proxmox resource(s), 0 AWS resource(s), enable_aws=False."
+  },
+  "policy_audit": {
+    "approved": true,
+    "history": [
+      {
+        "attempt": 0,
+        "approved": true,
+        "error_count": 0,
+        "violations": []
+      }
+    ],
+    "final_violations": []
+  },
+  "deployment_verification": {
+    "deploy_succeeded": true,
+    "live_ips": {
+      "edge_ip": "192.168.178.128",
+      "cloud_ip": "15.160.125.0"
+    },
+    "functional_checks": [
+      {
+        "name": "terraform_validate",
+        "endpoint": "C:\\Users\\efeka\\.gemini\\antigravity-ide\\scratch\\quota\\infra",
+        "passed": true,
+        "status_code": 0,
+        "latency_ms": 12.0,
+        "detail": "\u001b[32m\u001b[1mSuccess!\u001b[0m The configuration is valid.\n\u001b[0m"
+      },
+      {
+        "name": "http_healthz",
+        "endpoint": "http://192.168.178.128/healthz",
+        "passed": true,
+        "status_code": 200,
+        "latency_ms": 4.5,
+        "detail": "[dry-run simulated] Caddy /healthz responds 200 ok"
+      },
+      {
+        "name": "http_ingress_health",
+        "endpoint": "http://192.168.178.128/ingress-health",
+        "passed": true,
+        "status_code": 200,
+        "latency_ms": 5.2,
+        "detail": "[dry-run simulated] Caddy /ingress-health responds 'quota-ingress OK'"
+      },
+      {
+        "name": "api_health_roundtrip",
+        "endpoint": "http://192.168.178.128/api/health",
+        "passed": true,
+        "status_code": 200,
+        "latency_ms": 14.8,
+        "detail": "[dry-run simulated] AI Proxy /api/health responds 200 status=ok"
+      },
+      {
+        "name": "frontend_spa_routing",
+        "endpoint": "http://192.168.178.128/",
+        "passed": true,
+        "status_code": 200,
+        "latency_ms": 9.1,
+        "detail": "[dry-run simulated] Expo Web SPA routed via quota-ingress"
+      }
+    ],
+    "runtime_telemetry": {
+      "mode": "dry-run",
+      "allocated_cpu_cores": 4,
+      "allocated_memory_mb": 2048,
+      "running_containers": [
+        "quota-ingress",
+        "quota-web-frontend",
+        "quota-ai-proxy"
+      ],
+      "open_ports": [
+        80,
+        443
+      ],
+      "firewall_enabled": true,
+      "ssh_password_auth_enabled": false,
+      "ssh_allowed_cidr": "192.168.178.0/24",
+      "allowed_cidrs": [
+        "192.168.178.0/24"
+      ],
+      "http_latency_ms": 14.8,
+      "memory_utilization_pct": 34.0,
+      "cpu_utilization_pct": 21.0
+    }
+  },
+  "post_deploy_audit": {
+    "audit_passed": true,
+    "initial_findings": [],
+    "remediations_applied": [],
+    "remaining_findings": []
+  },
+  "agent_logs": [
+    {
+      "timestamp": "2026-11-20T18:36:33.813037+00:00",
+      "agent": "figaro_cli_bridge",
+      "phase": "ingest_placement_directive",
+      "status": "passed",
+      "reasoning": "Resolved directive 'dir-41bcf651dd' via mock-proxmox-first (scenario=all_edge, enable_aws=False, nodes=['edge-primary']).",
+      "details": {
+        "source": "mock-proxmox-first",
+        "cli_mode": "mock",
+        "cli_exit_code": 0,
+        "fallback_reason": "No external FIGARO CLI command configured; using Proxmox-first local mock."
+      }
+    },
+    {
+      "timestamp": "2026-11-20T18:36:33.816790+00:00",
+      "agent": "terraform_author_agent",
+      "phase": "author_rev_0",
+      "status": "passed",
+      "reasoning": "Authored initial Proxmox-first Terraform config for scenario='all_edge' (enable_aws=False, nodes=['edge-primary']).",
+      "details": {
+        "hcl_path": "C:\\Users\\efeka\\.gemini\\antigravity-ide\\scratch\\quota\\infra\\agent_generated.tf",
+        "tfvars_path": "C:\\Users\\efeka\\.gemini\\antigravity-ide\\scratch\\quota\\infra\\terraform.tfvars.json",
+        "placement_env_path": "C:\\Users\\efeka\\.gemini\\antigravity-ide\\scratch\\quota\\docker\\.env.placement",
+        "enable_aws": false,
+        "nodes": [
+          "edge-primary"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-11-20T18:36:38.336361+00:00",
+      "agent": "prompt_guard_agent",
+      "phase": "policy_audit_rev_0",
+      "status": "passed",
+      "reasoning": "Pre-deployment audit PASSED on revision 0: terraform validate OK, Proxmox constraints & security guardrails satisfied (3 Proxmox, 0 AWS planned).",
+      "details": {
+        "approved": true,
+        "error_count": 0,
+        "violation_codes": [],
+        "plan_source": "static_tfvars_preview"
+      }
+    },
+    {
+      "timestamp": "2026-11-20T18:36:42.911242+00:00",
+      "agent": "deploy_runner_agent",
+      "phase": "deploy_and_verify_dry-run",
+      "status": "passed",
+      "reasoning": "Execution (dry-run) SUCCEEDED: 5/5 automated functional checks passed (edge_ip=192.168.178.128, avg_latency_ms=14.8).",
+      "details": {
+        "execution_mode": "dry-run",
+        "live_ips": {
+          "edge_ip": "192.168.178.128",
+          "cloud_ip": "15.160.125.0"
+        },
+        "checks_passed": 5,
+        "checks_total": 5
+      }
+    },
+    {
+      "timestamp": "2026-11-20T18:36:42.913876+00:00",
+      "agent": "post_deploy_auditor_agent",
+      "phase": "post_deploy_audit_and_remediation",
+      "status": "passed",
+      "reasoning": "Post-deployment audit PASSED with 0 findings across capability alignment, security hardening, and performance tuning.",
+      "details": {
+        "initial_findings": 0,
+        "remediations_applied": 0,
+        "remaining_findings": 0,
+        "audit_passed": true
+      }
+    }
+  ]
+}
