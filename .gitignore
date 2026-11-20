@@ -36,6 +36,8 @@ docker/.env.placement
 *.tfstate.*
 *.tfvars
 *.tfvars.json
+*.tfplan
+tfplan.binary
 crash.log
 cost_guard.log
 __pycache__/
@@ -44,3 +46,7 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local Presentation Slides & Presenter Notes
+presentation.html
+presenter_guide.html
