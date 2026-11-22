@@ -7,13 +7,13 @@
 {$DOMAIN_NAME::80} {
   encode zstd gzip
 
-  # Health check endpoints for container orchestrators, agents, and load balancers
-  respond /healthz 200 {
-    body "ok"
+  # Health check endpoints wrapped in handle blocks so they run before catch-all handle
+  handle /healthz {
+    respond "ok" 200
   }
 
-  respond /ingress-health 200 {
-    body "quota-ingress OK"
+  handle /ingress-health {
+    respond "quota-ingress OK" 200
   }
 
   # Static asset caching for faster frontend delivery

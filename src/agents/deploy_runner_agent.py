@@ -38,7 +38,7 @@ def _http_probe(url: str, expected_substr: Optional[str] = None, timeout: float 
             body = resp.read().decode("utf-8", errors="ignore")
             latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
             ok = 200 <= resp.status < 300
-            if ok and expected_substr and expected_substr not in body:
+            if ok and expected_substr and expected_substr.lower() not in body.lower():
                 ok = False
             return FunctionalCheckResult(
                 name=url.rsplit("/", 1)[-1] or "root",

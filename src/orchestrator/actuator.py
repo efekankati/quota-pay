@@ -522,12 +522,37 @@ AWS_REGION=eu-south-1
             if scp_res.returncode != 0:
                 return False
 
+            caddyfile = self.docker_dir / "Caddyfile.ingress"
+            push_caddy_cmd = ""
+            if caddyfile.exists():
+                scp_caddy = subprocess.run(
+                    [
+                        "scp",
+                        "-o",
+                        "StrictHostKeyChecking=no",
+                        "-o",
+                        "ConnectTimeout=3",
+                        str(caddyfile),
+                        f"root@{pve_host}:/tmp/Caddyfile.ingress",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+                if scp_caddy.returncode == 0:
+                    push_caddy_cmd = (
+                        f"pct push {container_id} /tmp/Caddyfile.ingress /opt/quota-pay/docker/Caddyfile.ingress && "
+                        "rm -f /tmp/Caddyfile.ingress && "
+                    )
+
             if scenario_key == "all_edge":
                 compose_action = (
                     f"pct exec {container_id} -- bash -lc 'cd /opt/quota-pay/docker && "
-                    "git -C /opt/quota-pay pull --ff-only >/dev/null 2>&1 || true; "
                     "docker compose -f docker-compose.edge.yml --env-file .env.placement "
-                    "up -d quota-ingress quota-web-frontend quota-ai-proxy'"
+                    "up -d quota-web-frontend quota-ai-proxy && "
+                    "docker compose -f docker-compose.edge.yml --env-file .env.placement "
+                    "up -d --force-recreate quota-ingress'"
                 )
             else:
                 # Hybrid: edge handles ingress + frontend and stops local ai-proxy so /api/* routes to AWS
@@ -535,10 +560,13 @@ AWS_REGION=eu-south-1
                     f"pct exec {container_id} -- bash -lc 'cd /opt/quota-pay/docker && "
                     "docker stop quota-edge-ai-proxy >/dev/null 2>&1 || true; "
                     "docker compose -f docker-compose.edge.yml --env-file .env.placement "
-                    "up -d quota-ingress quota-web-frontend'"
+                    "up -d quota-web-frontend && "
+                    "docker compose -f docker-compose.edge.yml --env-file .env.placement "
+                    "up -d --force-recreate quota-ingress'"
                 )
 
             remote_cmd = (
+                f"{push_caddy_cmd}"
                 f"pct push {container_id} /tmp/.env.placement /opt/quota-pay/docker/.env.placement && "
                 f"pct push {container_id} /tmp/.env.placement /opt/quota-pay/docker/.env && "
                 f"rm -f /tmp/.env.placement && {compose_action}"
