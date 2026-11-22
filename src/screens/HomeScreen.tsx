@@ -144,7 +144,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         id: user?.id || 'user_me',
         name: user?.fullName || 'You (Organizer)',
         isOrganizer: true,
-        status: 'paid',
+        status: 'pending',
       },
       {
         currency: selectedCurrency,
@@ -498,6 +498,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               {t('restaurantNameLabel')}
             </Text>
             <TextInput
+              testID="home-manual-title-input"
               value={quotaTitle}
               onChangeText={setQuotaTitle}
               onFocus={() => {
@@ -538,6 +539,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   {CURRENCIES.find((c) => c.code === selectedCurrency)?.symbol || '€'}
                 </Text>
                 <TextInput
+                  testID="home-manual-amount-input"
                   value={quotaAmount}
                   onChangeText={setQuotaAmount}
                   onFocus={() => {
@@ -640,6 +642,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             {/* Input Row */}
             <View style={styles.addParticipantRow}>
               <TextInput
+                testID="home-manual-participant-input"
                 value={newParticipantName}
                 onChangeText={setNewParticipantName}
                 onFocus={() => {
@@ -662,6 +665,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 returnKeyType="done"
               />
               <TouchableOpacity
+                testID="home-manual-add-participant-btn"
                 onPress={handleAddParticipant}
                 disabled={!newParticipantName.trim()}
                 style={[
@@ -701,6 +705,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 {SUGGESTED_NAMES.filter((name) => !participantsList.includes(name)).map((name) => (
                   <TouchableOpacity
                     key={name}
+                    testID={`home-manual-quick-add-${name.toLowerCase()}`}
                     onPress={() => {
                       lightImpact();
                       setParticipantsList([...participantsList, name]);
@@ -773,6 +778,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
           {/* Button: Create Quota */}
           <Button
+            testID="home-manual-create-btn"
             title={t('createQuota')}
             onPress={handleCreateManualBill}
             disabled={!quotaTitle.trim()}

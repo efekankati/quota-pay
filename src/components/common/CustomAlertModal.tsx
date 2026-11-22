@@ -119,12 +119,12 @@ export const CustomAlertModal: React.FC = () => {
           <View style={styles.iconContainer}>{renderIcon()}</View>
 
           {/* Title & Message */}
-          <Text style={[styles.title, { color: colors.textPrimary }]}>
+          <Text testID="alert-modal-title" style={[styles.title, { color: colors.textPrimary }]}>
             {options?.title || ''}
           </Text>
 
           {options?.message ? (
-            <Text style={[styles.message, { color: colors.textSecondary }]}>
+            <Text testID="alert-modal-message" style={[styles.message, { color: colors.textSecondary }]}>
               {options.message}
             </Text>
           ) : null}
@@ -140,6 +140,7 @@ export const CustomAlertModal: React.FC = () => {
               return (
                 <TouchableOpacity
                   key={`${btn.text}_${index}`}
+                  testID={`alert-modal-btn-${index}`}
                   activeOpacity={0.8}
                   onPress={() => handleButtonPress(btn)}
                   style={[

@@ -461,6 +461,8 @@ export const TRANSLATIONS = {
     devPreviewBannerTitle: 'ANTEPRIMA SVILUPPO',
     welcomeBackTitle: 'Benvenuto! 👋',
     loginSuccessDesc: 'Accesso eseguito con successo.',
+    copertoToggleLabel: 'Coperto / Servizio',
+    confirmMySharePaidCta: 'Conferma la Mia Quota Pagata',
   },
 
   tr: {
@@ -901,6 +903,8 @@ export const TRANSLATIONS = {
     devPreviewBannerTitle: 'GELİŞTİRİCİ ÖNİZLEMESİ',
     welcomeBackTitle: 'Hoş geldiniz! 👋',
     loginSuccessDesc: 'Başarıyla giriş yapıldı.',
+    copertoToggleLabel: 'Kuver / Servis Bedeli',
+    confirmMySharePaidCta: 'Kendi Payımı Ödendi Olarak Onayla',
   },
 
   en: {
@@ -1347,6 +1351,8 @@ export const TRANSLATIONS = {
     devPreviewBannerTitle: 'DEVELOPMENT PREVIEW',
     welcomeBackTitle: 'Welcome! 👋',
     loginSuccessDesc: 'Signed in successfully.',
+    copertoToggleLabel: 'Coperto / Service Charge',
+    confirmMySharePaidCta: 'Settle My Share',
   },
 
   es: {
@@ -1787,6 +1793,8 @@ export const TRANSLATIONS = {
     devPreviewBannerTitle: 'VISTA PREVIA DE DESARROLLO',
     welcomeBackTitle: '¡Bienvenido! 👋',
     loginSuccessDesc: 'Has iniciado sesión correctamente.',
+    copertoToggleLabel: 'Cubierto / Servicio',
+    confirmMySharePaidCta: 'Marcar Mi Parte Pagada',
   },
 
   de: {
@@ -2227,6 +2235,8 @@ export const TRANSLATIONS = {
     devPreviewBannerTitle: 'ENTWICKLUNGSVORSCHAU',
     welcomeBackTitle: 'Willkommen! 👋',
     loginSuccessDesc: 'Erfolgreich angemeldet.',
+    copertoToggleLabel: 'Gedeck / Servicegebühr',
+    confirmMySharePaidCta: 'Meinen Anteil Als Bezahlt Markieren',
   },
 
   fr: {
@@ -2667,6 +2677,8 @@ export const TRANSLATIONS = {
     devPreviewBannerTitle: 'APERÇU DÉVELOPPEUR',
     welcomeBackTitle: 'Bienvenue ! 👋',
     loginSuccessDesc: 'Connexion réussie.',
+    copertoToggleLabel: 'Couvert / Service',
+    confirmMySharePaidCta: 'Confirmer Ma Part Réglée',
   },
 } as const;
 

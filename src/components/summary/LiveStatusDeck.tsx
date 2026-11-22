@@ -31,20 +31,31 @@ export const LiveStatusDeck: React.FC<LiveStatusDeckProps> = ({
       </Text>
 
       <View style={styles.list}>
-        {bill.participants.map((participant) => {
+        {bill.participants.map((participant, idx) => {
           const breakdown = getBillShareBreakdown(bill.id, participant.id);
           const isOrg =
             Boolean(participant.isOrganizer) ||
             participant.id === 'user_me' ||
             participant.id === bill.organizerId;
-          const isPaid = isOrg || participant.status === 'paid';
+          const isPaid = bill.isManual
+            ? participant.status === 'paid'
+            : isOrg || participant.status === 'paid';
           const displayAmount = isOrg
-            ? (bill.isManual ? (breakdown.totalDue > 0 ? breakdown.totalDue : (participant.paidAmount || 0)) : breakdown.totalDue)
-            : (participant.paidAmount || breakdown.totalDue);
+            ? bill.isManual
+              ? participant.status === 'paid' && participant.paidAmount !== undefined
+                ? participant.paidAmount
+                : breakdown.totalDue > 0
+                ? breakdown.totalDue
+                : participant.paidAmount || 0
+              : breakdown.totalDue
+            : participant.status === 'paid' && participant.paidAmount !== undefined
+            ? participant.paidAmount
+            : breakdown.totalDue;
 
           return (
             <View
               key={participant.id}
+              testID={`summary-participant-row-${idx}`}
               style={[
                 styles.participantRow,
                 {
@@ -61,10 +72,10 @@ export const LiveStatusDeck: React.FC<LiveStatusDeckProps> = ({
                   status={isPaid ? 'paid' : participant.status}
                 />
                 <View style={styles.nameBlock}>
-                  <Text style={[styles.nameText, { color: colors.textPrimary }]}>
+                  <Text testID={`summary-participant-name-${idx}`} style={[styles.nameText, { color: colors.textPrimary }]}>
                     {participant.name}
                   </Text>
-                  <View style={styles.statusSnippet}>
+                  <View testID={`summary-participant-status-${idx}`} style={styles.statusSnippet}>
                     {isPaid ? (
                       <Badge
                         label={
@@ -83,7 +94,7 @@ export const LiveStatusDeck: React.FC<LiveStatusDeckProps> = ({
 
               {/* Amount & Nudge CTA */}
               <View style={styles.rightActions}>
-                <Text style={[styles.amountText, { color: isPaid ? colors.accent : colors.amber }]}>
+                <Text testID={`summary-participant-amount-${idx}`} style={[styles.amountText, { color: isPaid ? colors.accent : colors.amber }]}>
                   €{displayAmount.toFixed(2)}
                 </Text>
 

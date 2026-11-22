@@ -257,6 +257,7 @@ export const QrShareModal: React.FC<QrShareModalProps> = ({
 
               {/* Close X Button */}
               <TouchableOpacity
+                testID="qr-modal-close-btn"
                 onPress={handleDismiss}
                 style={[styles.closeBtn, { backgroundColor: colors.surfaceElevated }]}
               >
@@ -302,6 +303,7 @@ export const QrShareModal: React.FC<QrShareModalProps> = ({
             {/* Bottom Actions: Copy Link */}
             <View style={styles.actionsFooter}>
               <TouchableOpacity
+                testID="qr-modal-copy-link-btn"
                 activeOpacity={0.8}
                 onPress={handleCopyLink}
                 style={[

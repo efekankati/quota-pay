@@ -96,6 +96,21 @@ android {
         versionName "1.0.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
+
+        if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+            externalNativeBuild {
+                cmake {
+                    arguments "-DCMAKE_OBJECT_PATH_MAX=230"
+                }
+            }
+        }
+    }
+    if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+        externalNativeBuild {
+            cmake {
+                buildStagingDirectory file("${System.getProperty('java.io.tmpdir')}/q")
+            }
+        }
     }
     signingConfigs {
         debug {

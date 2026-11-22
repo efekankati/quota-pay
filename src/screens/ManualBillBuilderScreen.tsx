@@ -95,6 +95,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
     renameParticipant,
     setBillCurrency,
     addItemToBill,
+    updateLineItem,
     deleteLineItem,
     toggleItemAssignment,
     assignAllParticipantsToItem,
@@ -121,6 +122,9 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
   const [newItemPrice, setNewItemPrice] = useState('');
   const [newItemQty, setNewItemQty] = useState(1);
   const [isAddItemModalOpen, setIsAddItemModalOpen] = useState(false);
+  const [copertoPerPersonInput, setCopertoPerPersonInput] = useState(
+    bill?.copertoPerPerson && bill.copertoPerPerson > 0 ? bill.copertoPerPerson.toFixed(2) : '2.50'
+  );
 
   // Guest Management State
   const [guestNameInput, setGuestNameInput] = useState('');
@@ -384,18 +388,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
       setManualTotalAmount(bill.id, totalAmount);
     }
 
-    // Mark organizer's share as settled
-    if (organizerBreakdown) {
-      const latestBreakdown = getBillShareBreakdown(bill.id, organizerBreakdown.id);
-      markParticipantPaid(
-        bill.id,
-        organizerBreakdown.id,
-        'card',
-        latestBreakdown.totalDue > 0 ? latestBreakdown.totalDue : organizerShare
-      );
-    }
-
-    // 2. Persist bill to Supabase with bill_splits and bill_items
+    // 2. Persist bill to Supabase with bill_splits and bill_items (organizer stays pending until end-of-meal settlement)
     const freshBill = useBillStore.getState().bills.find((b) => b.id === bill.id) || bill;
     try {
       await BillSyncService.saveBillToCloud(freshBill);
@@ -527,6 +520,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
 
               {/* QR Code Quick View Button */}
               <TouchableOpacity
+                testID="manual-qr-btn"
                 activeOpacity={0.75}
                 onPress={() => {
                   lightImpact();
@@ -685,6 +679,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
           >
             {/* Option A: Split Evenly */}
             <TouchableOpacity
+              testID="manual-mode-even"
               activeOpacity={0.85}
               onPress={() => handleSelectSplitMode('even')}
               style={[
@@ -713,6 +708,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
 
             {/* Option B: By Item */}
             <TouchableOpacity
+              testID="manual-mode-by-item"
               activeOpacity={0.85}
               onPress={() => handleSelectSplitMode('by_item')}
               style={[
@@ -893,12 +889,127 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
         )}
 
         {/* --- SECTION 3B: ITEMIZED MODE VIEW --- */}
-        {splitMode === 'by_item' && (
+        {splitMode === 'by_item' && (() => {
+          const copertoItem = bill.items.find((it) => it.isCoperto);
+          const nonCopertoItems = bill.items.filter((it) => !it.isCoperto);
+          const copertoEnabled = Boolean(copertoItem);
+          const dinerCount = Math.max(bill.participants.length, 1);
+
+          return (
           <View style={styles.splitSection}>
+            {/* Italian Coperto / Service Charge Toggle Card */}
+            <View
+              style={[
+                styles.itemCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: copertoEnabled ? colors.accent : colors.border,
+                  marginHorizontal: SPACING.lg,
+                  marginBottom: SPACING.md,
+                },
+              ]}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <View style={{ flex: 1, paddingRight: SPACING.sm }}>
+                  <Text style={[styles.itemName, { color: colors.textPrimary }]}>
+                    {t('copertoToggleLabel')}
+                  </Text>
+                  <Text style={[styles.itemPriceDetail, { color: colors.textSecondary }]}>
+                    {copertoEnabled && copertoItem
+                      ? `${dinerCount}x ${currentCurrency.symbol}${copertoItem.unitPrice.toFixed(2)} = ${currentCurrency.symbol}${copertoItem.totalPrice.toFixed(2)}`
+                      : t('seatedCount', { count: dinerCount })}
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  testID="manual-coperto-toggle"
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    lightImpact();
+                    if (copertoItem) {
+                      deleteLineItem(bill.id, copertoItem.id);
+                    } else {
+                      const parsed = parseFloat(copertoPerPersonInput.replace(',', '.'));
+                      const unitPrice = !isNaN(parsed) && parsed > 0 ? Math.round(parsed * 100) / 100 : 2.5;
+                      addItemToBill(bill.id, {
+                        name: 'Coperto',
+                        quantity: dinerCount,
+                        unitPrice,
+                        isCoperto: true,
+                        assignedParticipantIds: bill.participants.map((p) => p.id),
+                      });
+                    }
+                  }}
+                  style={[
+                    styles.allAssignPill,
+                    {
+                      backgroundColor: copertoEnabled ? colors.accentLight : colors.surfaceElevated,
+                      borderColor: copertoEnabled ? colors.accent : colors.border,
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.allAssignText,
+                      {
+                        fontSize: 12,
+                        color: copertoEnabled ? colors.accent : colors.textSecondary,
+                      },
+                    ]}
+                  >
+                    {copertoEnabled ? t('included') : t('addBtn')}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {copertoEnabled && copertoItem && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, gap: 10 }}>
+                  <Text style={[styles.itemPriceDetail, { color: colors.textSecondary, marginTop: 0 }]}>
+                    {currentCurrency.symbol} / {t('perPersonLabel')}
+                  </Text>
+                  <TextInput
+                    testID="manual-coperto-amount-input"
+                    value={copertoPerPersonInput}
+                    onChangeText={(txt) => {
+                      setCopertoPerPersonInput(txt);
+                      const parsed = parseFloat(txt.replace(',', '.'));
+                      if (!isNaN(parsed) && parsed > 0) {
+                        const unitPrice = Math.round(parsed * 100) / 100;
+                        updateLineItem(bill.id, copertoItem.id, {
+                          quantity: dinerCount,
+                          unitPrice,
+                          totalPrice: Math.round(dinerCount * unitPrice * 100) / 100,
+                        });
+                      }
+                    }}
+                    keyboardType="decimal-pad"
+                    placeholder="2.50"
+                    placeholderTextColor={colors.textTertiary}
+                    style={[
+                      styles.textInput,
+                      {
+                        width: 90,
+                        height: 36,
+                        textAlign: 'right',
+                        backgroundColor: colors.surfaceElevated,
+                        borderColor: colors.border,
+                        color: colors.textPrimary,
+                      },
+                    ]}
+                  />
+                  <Text testID="manual-coperto-total-text" style={[styles.itemName, { color: colors.accent }]}>
+                    {currentCurrency.symbol}{copertoItem.totalPrice.toFixed(2)}
+                  </Text>
+                </View>
+              )}
+            </View>
+
             <View style={styles.subSectionHeader}>
               <View>
                 <Text style={[styles.subSectionTitle, { color: colors.textPrimary }]}>
-                  {t('lineItemsHeader', { count: bill.items.length })}
+                  {t('lineItemsHeader', { count: nonCopertoItems.length })}
                 </Text>
                 <Text style={[styles.subSectionSubtitle, { color: colors.textSecondary }]}>
                   {t('totalLabel')}: {currentCurrency.symbol}{totalAmount.toFixed(2)}
@@ -906,6 +1017,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
               </View>
 
               <TouchableOpacity
+                testID="manual-add-item-btn"
                 onPress={() => setIsAddItemModalOpen(true)}
                 style={[styles.addItemHeaderBtn, { backgroundColor: colors.accent }]}
               >
@@ -914,7 +1026,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
               </TouchableOpacity>
             </View>
 
-            {bill.items.length === 0 ? (
+            {nonCopertoItems.length === 0 ? (
               <View
                 style={[
                   styles.emptyItemsCard,
@@ -929,6 +1041,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
                   {t('noLineItemsDesc')}
                 </Text>
                 <TouchableOpacity
+                  testID="manual-add-first-item-btn"
                   onPress={() => setIsAddItemModalOpen(true)}
                   style={[styles.emptyAddBtn, { backgroundColor: colors.accentLight }]}
                 >
@@ -940,7 +1053,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
               </View>
             ) : (
               <View style={styles.itemsList}>
-                {bill.items.map((item) => {
+                {nonCopertoItems.map((item, itemIdx) => {
                   const assignedCount = item.assignedParticipantIds?.length || 0;
                   const itemSharePerPerson =
                     assignedCount > 0 ? (item.totalPrice / assignedCount).toFixed(2) : '0.00';
@@ -948,6 +1061,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
                   return (
                     <View
                       key={item.id}
+                      testID={`manual-item-card-${itemIdx}`}
                       style={[
                         styles.itemCard,
                         { backgroundColor: colors.surface, borderColor: colors.border },
@@ -968,6 +1082,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
 
                         <View style={styles.itemActionsRow}>
                           <TouchableOpacity
+                            testID={`manual-item-toggle-all-${itemIdx}`}
                             onPress={() => {
                               lightImpact();
                               assignAllParticipantsToItem(bill.id, item.id);
@@ -1002,6 +1117,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
                           </TouchableOpacity>
 
                           <TouchableOpacity
+                            testID={`manual-item-delete-${itemIdx}`}
                             onPress={() => {
                               lightImpact();
                               deleteLineItem(bill.id, item.id);
@@ -1015,11 +1131,12 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
 
                       {/* Participant Assignment Chips */}
                       <View style={styles.chipsRow}>
-                        {bill.participants.map((participant) => {
+                        {bill.participants.map((participant, pIdx) => {
                           const isAssigned = item.assignedParticipantIds?.includes(participant.id);
                           return (
                             <TouchableOpacity
                               key={participant.id}
+                              testID={`manual-item-chip-${itemIdx}-${pIdx}`}
                               onPress={() => {
                                 lightImpact();
                                 toggleItemAssignment(bill.id, item.id, participant.id);
@@ -1066,7 +1183,8 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
               </View>
             )}
           </View>
-        )}
+          );
+        })()}
 
         {/* --- SECTION 4: Participant & Guest Management --- */}
         <View style={styles.participantsSection}>
@@ -1086,6 +1204,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
             <View style={styles.addGuestInputRow}>
               <UserPlus size={18} color={colors.textTertiary} />
               <TextInput
+                testID="manual-guest-name-input"
                 value={guestNameInput}
                 onChangeText={setGuestNameInput}
                 placeholder={t('enterGuestNamePlaceholder')}
@@ -1095,6 +1214,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
                 onSubmitEditing={() => handleAddGuest()}
               />
               <TouchableOpacity
+                testID="manual-guest-add-btn"
                 onPress={() => handleAddGuest()}
                 disabled={!guestNameInput.trim()}
                 style={[
@@ -1132,6 +1252,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
                   return (
                     <TouchableOpacity
                       key={name}
+                      testID={`manual-guest-quick-${name.toLowerCase()}`}
                       onPress={() => handleAddGuest(name)}
                       style={[
                         styles.suggestionPill,
@@ -1220,7 +1341,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
             <Text style={[styles.footerLabel, { color: colors.textSecondary }]}>
               {t('totalBillFooterLabel')}
             </Text>
-            <Text style={[styles.footerGrandTotal, { color: colors.textPrimary }]}>
+            <Text testID="manual-footer-total" style={[styles.footerGrandTotal, { color: colors.textPrimary }]}>
               {currentCurrency.symbol}{totalAmount.toFixed(2)}
             </Text>
           </View>
@@ -1231,7 +1352,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
             <Text style={[styles.footerLabel, { color: colors.accent }]}>
               {t('yourShareFooterLabel')}
             </Text>
-            <Text style={[styles.footerShareVal, { color: colors.accent }]}>
+            <Text testID="manual-footer-organizer-share" style={[styles.footerShareVal, { color: colors.accent }]}>
               {currentCurrency.symbol}{organizerShare.toFixed(2)}
             </Text>
           </View>
@@ -1249,6 +1370,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
         </View>
 
         <TouchableOpacity
+          testID="manual-generate-share-btn"
           activeOpacity={0.85}
           onPress={handleGenerateAndShare}
           style={[styles.generateBtn, { backgroundColor: colors.accent }, SHADOWS.glowAccent]}
@@ -1283,6 +1405,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
             <View style={styles.inputGroup}>
               <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>{t('itemNameLabel')}</Text>
               <TextInput
+                testID="manual-item-name-input"
                 value={newItemName}
                 onChangeText={setNewItemName}
                 placeholder={t('itemNamePlaceholder')}
@@ -1301,6 +1424,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
                   {t('priceSymbolLabel', { symbol: currentCurrency.symbol })}
                 </Text>
                 <TextInput
+                  testID="manual-item-price-input"
                   value={newItemPrice}
                   onChangeText={setNewItemPrice}
                   placeholder="8.50"
@@ -1322,13 +1446,15 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
                   ]}
                 >
                   <TouchableOpacity
+                    testID="manual-item-qty-minus"
                     onPress={() => setNewItemQty(Math.max(1, newItemQty - 1))}
                     style={styles.stepperBtn}
                   >
                     <Text style={{ color: colors.textPrimary, fontWeight: '700' }}>-</Text>
                   </TouchableOpacity>
-                  <Text style={[styles.stepperVal, { color: colors.textPrimary }]}>{newItemQty}</Text>
+                  <Text testID="manual-item-qty-value" style={[styles.stepperVal, { color: colors.textPrimary }]}>{newItemQty}</Text>
                   <TouchableOpacity
+                    testID="manual-item-qty-plus"
                     onPress={() => setNewItemQty(newItemQty + 1)}
                     style={styles.stepperBtn}
                   >
@@ -1339,6 +1465,7 @@ export const ManualBillBuilderScreen: React.FC<ManualBillBuilderScreenProps> = (
             </View>
 
             <Button
+              testID="manual-item-submit-btn"
               title={t('addItemBtn')}
               onPress={handleAddItem}
               style={{ marginTop: SPACING.md }}

@@ -253,7 +253,7 @@ export const RootNavigator: React.FC = () => {
           .catch(() => {});
       }
       if (billId) {
-        if (!billData) {
+        if (!billData && !isGuest && !claimId) {
           ensureBillExists(billId);
         }
         setActiveBillId(billId);

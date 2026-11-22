@@ -8,8 +8,20 @@ class BillSyncServiceImpl {
   private splitListeners: Map<string, Set<(split: any) => void>> = new Map();
   private splitChannels: Map<string, any> = new Map();
   private inFlightFetches: Map<string, Promise<BillSession | null>> = new Map();
+  private saveQueues: Map<string, Promise<void>> = new Map();
+  private inFlightActors: Map<string, { actorId: string; billSnapshot: BillSession }> = new Map();
   private lastLocalMutationAt: Map<string, number> = new Map();
   private isChannelReady = false;
+
+  /**
+   * Preserves in-flight local actor claims if an older cloud snapshot arrives before CAS/retry converges.
+   */
+  public applyPendingLocalActor(incomingBill: BillSession): BillSession {
+    if (!incomingBill?.id) return incomingBill;
+    const pending = this.inFlightActors.get(incomingBill.id);
+    if (!pending) return incomingBill;
+    return this.mergeBillSessions(incomingBill, pending.billSnapshot, pending.actorId);
+  }
 
   constructor() {
     // Channels are lazily initialized on first subscription and torn down via supabase.removeChannel(channel) on unmount
@@ -91,6 +103,11 @@ class BillSyncServiceImpl {
     ]);
 
     // 3. Merge Line Items & Participant Claims
+    const cloudPaidGuestIds = new Set(
+      (cloudBill.participants || [])
+        .filter((p) => !p.isOrganizer && p.id !== 'user_me' && p.status === 'paid')
+        .map((p) => p.id)
+    );
     const paidGuestIds = new Set(
       mergedParticipants
         .filter((p) => !p.isOrganizer && p.id !== 'user_me' && p.status === 'paid')
@@ -128,13 +145,18 @@ class BillSyncServiceImpl {
             mergedClaimed[pId] = qty;
           }
         }
-        for (const [pId, qty] of Object.entries(localItem.claimedQuantities || {})) {
-          if (pId === actorParticipantId) {
-            if (qty > 0 && !paidGuestIds.has(pId)) {
-              mergedClaimed[pId] = qty;
-            }
-          } else if (qty > 0 && mergedClaimed[pId] === undefined) {
-            mergedClaimed[pId] = qty;
+        const othersTotal = Object.values(mergedClaimed).reduce((sum, q) => sum + (q || 0), 0);
+        if (cloudPaidGuestIds.has(actorParticipantId)) {
+          const frozenQty = cloudItem.claimedQuantities?.[actorParticipantId] || 0;
+          if (frozenQty > 0) {
+            mergedClaimed[actorParticipantId] = frozenQty;
+          }
+        } else {
+          const desiredActorQty = localItem.claimedQuantities?.[actorParticipantId] || 0;
+          const maxAllowed = Math.max(0, (localItem.quantity || 1) - othersTotal);
+          const boundedActorQty = Math.min(desiredActorQty, maxAllowed);
+          if (boundedActorQty > 0) {
+            mergedClaimed[actorParticipantId] = boundedActorQty;
           }
         }
       } else {
@@ -157,8 +179,16 @@ class BillSyncServiceImpl {
             assignedSet.add(pId);
           }
         }
-        if ((localItem.assignedParticipantIds || []).includes(actorParticipantId)) {
-          assignedSet.add(actorParticipantId);
+        if (cloudPaidGuestIds.has(actorParticipantId)) {
+          if ((cloudItem.assignedParticipantIds || []).includes(actorParticipantId)) {
+            assignedSet.add(actorParticipantId);
+          }
+        } else if ((localItem.assignedParticipantIds || []).includes(actorParticipantId)) {
+          const hasQtyClaims =
+            Object.keys(mergedClaimed).length > 0 || (localItem.quantity || 1) > 1;
+          if (!hasQtyClaims || (mergedClaimed[actorParticipantId] || 0) > 0) {
+            assignedSet.add(actorParticipantId);
+          }
         }
       } else {
         for (const pId of localItem.assignedParticipantIds || []) {
@@ -177,7 +207,7 @@ class BillSyncServiceImpl {
       return {
         ...localItem,
         claimedQuantities: mergedClaimed,
-        assignedParticipantIds: Array.from(assignedSet),
+        assignedParticipantIds: Array.from(assignedSet).sort(),
       };
     });
 
@@ -207,7 +237,7 @@ class BillSyncServiceImpl {
     const allPaid =
       mergedParticipants.length > 0 && mergedParticipants.every((p) => p.status === 'paid');
     const allMoneyCovered =
-      grandTotal > 0 && Math.round(totalPaidAmount * 100) >= Math.round(grandTotal * 100) - 5;
+      grandTotal > 0 && Math.round(totalPaidAmount * 100) >= Math.round(grandTotal * 100);
     const mergedStatus =
       allPaid && allMoneyCovered
         ? ('settled' as const)
@@ -307,6 +337,12 @@ class BillSyncServiceImpl {
   ): Promise<void> {
     if (!bill || !bill.id) return;
     this.lastLocalMutationAt.set(bill.id, Date.now());
+    if (actorParticipantId) {
+      this.inFlightActors.set(bill.id, {
+        actorId: actorParticipantId,
+        billSnapshot: bill,
+      });
+    }
 
     // Persist & merge atomically in Supabase first, then broadcast the canonical merged snapshot
     // so concurrent tabs never twitch between unmerged and merged states.
@@ -316,73 +352,161 @@ class BillSyncServiceImpl {
   }
 
   /**
-   * Persists a serialized bill session snapshot, merging with any prior guest joins/claims
-   * already stored in Supabase so concurrent guests never overwrite each other.
+   * Serializes per-bill writes through a promise queue so rapid local taps never interleave.
    */
   public async saveBillToCloud(
     bill: BillSession,
     actorParticipantId?: string
   ): Promise<void> {
+    if (!bill || !bill.id) return;
+    if (actorParticipantId) {
+      this.inFlightActors.set(bill.id, {
+        actorId: actorParticipantId,
+        billSnapshot: bill,
+      });
+    }
+    const prev = this.saveQueues.get(bill.id) || Promise.resolve();
+    const next = prev
+      .catch(() => {})
+      .then(() => this.performSaveBillToCloud(bill, actorParticipantId));
+    this.saveQueues.set(bill.id, next);
+    try {
+      await next;
+    } finally {
+      if (this.saveQueues.get(bill.id) === next) {
+        this.saveQueues.delete(bill.id);
+      }
+    }
+  }
+
+  /**
+   * Persists a serialized bill session snapshot, merging with any prior guest joins/claims
+   * already stored in Supabase and verifying read-back so concurrent writes converge.
+   */
+  private async performSaveBillToCloud(
+    bill: BillSession,
+    actorParticipantId?: string
+  ): Promise<void> {
     const supabase = getSupabaseClient();
-    if (!supabase || !bill || !bill.id) return;
+    if (!supabase || !bill || !bill.id) {
+      if (bill?.id) this.inFlightActors.delete(bill.id);
+      return;
+    }
 
     try {
-      // Fetch existing row first so we merge any prior guest actions atomically
-      const { data: existing } = await supabase
+      const { data: initialRows } = await supabase
         .from('bills')
         .select('id, title')
         .ilike('title', `%${bill.id}%`)
         .order('created_at', { ascending: false })
         .limit(1);
 
-      let mergedBill = bill;
-      if (existing && existing.length > 0 && existing[0].title) {
-        try {
-          const parsedExisting = JSON.parse(existing[0].title);
-          if (parsedExisting?.bill) {
-            mergedBill = this.mergeBillSessions(
-              parsedExisting.bill as BillSession,
-              bill,
-              actorParticipantId
-            );
-          }
-        } catch {
-          mergedBill = bill;
-        }
-      }
+      let rowId: string | number | null =
+        initialRows && initialRows.length > 0 ? initialRows[0].id : null;
+      let existingTitle: string | null =
+        initialRows && initialRows.length > 0 ? initialRows[0].title : null;
 
-      // Never serialize multi-MB base64 strings or local blob: URLs into cloud JSON payloads
-      const cloudSafeBill: BillSession = {
+      let mergedBill = bill;
+      let cloudSafeBill: BillSession = {
         ...mergedBill,
         receiptImageUrl: sanitizeReceiptUrlForPersistence(mergedBill.receiptImageUrl),
       };
 
-      const payloadStr = JSON.stringify({ q_id: cloudSafeBill.id, bill: cloudSafeBill });
-      const grandTotal =
-        cloudSafeBill.taxSummary?.grandTotal || cloudSafeBill.manualTotalAmount || 0;
-      const status = cloudSafeBill.status === 'settled' ? 'completed' : 'pending';
+      const maxAttempts = rowId !== null ? 4 : 1;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (attempt > 0 && rowId !== null) {
+          const jitterMs = 45 + Math.floor(Math.random() * 100);
+          await new Promise((resolve) => setTimeout(resolve, jitterMs));
+          const { data: freshRows } = await supabase
+            .from('bills')
+            .select('id, title')
+            .eq('id', rowId)
+            .limit(1);
+          existingTitle = freshRows && freshRows.length > 0 ? freshRows[0].title : existingTitle;
+        }
 
-      // 1. Persist merged Bill in `bills` table
-      if (existing && existing.length > 0) {
-        await supabase
-          .from('bills')
-          .update({
-            title: payloadStr,
-            total_amount: grandTotal,
-            status,
-            currency: cloudSafeBill.currency || 'EUR',
-          })
-          .eq('id', existing[0].id);
-      } else {
-        await supabase.from('bills').insert({
-          title: payloadStr,
-          total_amount: grandTotal,
-          status,
-          currency: cloudSafeBill.currency || 'EUR',
-        });
+        mergedBill = bill;
+        if (existingTitle) {
+          try {
+            const parsedExisting = JSON.parse(existingTitle);
+            if (parsedExisting?.bill) {
+              mergedBill = this.mergeBillSessions(
+                parsedExisting.bill as BillSession,
+                bill,
+                actorParticipantId
+              );
+            }
+          } catch {
+            mergedBill = bill;
+          }
+        }
+
+        cloudSafeBill = {
+          ...mergedBill,
+          receiptImageUrl: sanitizeReceiptUrlForPersistence(mergedBill.receiptImageUrl),
+        };
+
+        const payloadStr = JSON.stringify({ q_id: cloudSafeBill.id, bill: cloudSafeBill });
+        const grandTotal =
+          cloudSafeBill.taxSummary?.grandTotal || cloudSafeBill.manualTotalAmount || 0;
+        const status = cloudSafeBill.status === 'settled' ? 'completed' : 'pending';
+
+        if (rowId !== null) {
+          if (existingTitle === payloadStr) {
+            break;
+          }
+          await supabase
+            .from('bills')
+            .update({
+              title: payloadStr,
+              total_amount: grandTotal,
+              status,
+              currency: cloudSafeBill.currency || 'EUR',
+            })
+            .eq('id', rowId);
+
+          if (!actorParticipantId) {
+            break;
+          }
+
+          const { data: verifyRows } = await supabase
+            .from('bills')
+            .select('title')
+            .eq('id', rowId)
+            .limit(1);
+          const readBackTitle = verifyRows && verifyRows.length > 0 ? verifyRows[0].title : null;
+          if (!readBackTitle || readBackTitle === payloadStr) {
+            break;
+          }
+          existingTitle = readBackTitle;
+        } else {
+          const { data: inserted } = await supabase
+            .from('bills')
+            .insert({
+              title: payloadStr,
+              total_amount: grandTotal,
+              status,
+              currency: cloudSafeBill.currency || 'EUR',
+            })
+            .select('id')
+            .limit(1);
+          if (inserted && inserted.length > 0) {
+            rowId = inserted[0].id;
+          }
+          break;
+        }
       }
 
+      const grandTotal =
+        cloudSafeBill.taxSummary?.grandTotal || cloudSafeBill.manualTotalAmount || 0;
+
       // Always notify local store & broadcast the canonical merged state to all open tabs
+      if (actorParticipantId) {
+        const currentPending = this.inFlightActors.get(bill.id);
+        if (currentPending?.actorId === actorParticipantId && currentPending.billSnapshot === bill) {
+          this.inFlightActors.delete(bill.id);
+        }
+      }
       this.notifyListeners(mergedBill);
       if (this.channel && this.isChannelReady) {
         try {
@@ -418,12 +542,19 @@ class BillSyncServiceImpl {
             }
           }
 
+          const resolvedOwedAmount =
+            p.status === 'paid' && p.paidAmount !== undefined
+              ? p.paidAmount
+              : p.owedAmount !== undefined
+              ? p.owedAmount
+              : owedAmount;
+
           return {
             id: splitId,
             bill_id: cloudSafeBill.id,
             participant_id: p.id,
             participant_name: p.name,
-            owed_amount: p.owedAmount !== undefined ? p.owedAmount : owedAmount,
+            owed_amount: resolvedOwedAmount,
             status: p.status === 'paid' ? 'paid' : 'unpaid',
             payment_method: p.paymentMethod || null,
             paid_at: p.paidAt || null,
@@ -457,6 +588,13 @@ class BillSyncServiceImpl {
       }
     } catch (err) {
       console.warn('[BillSync] saveBillToCloud failed:', err);
+    } finally {
+      if (actorParticipantId && bill?.id) {
+        const currentPending = this.inFlightActors.get(bill.id);
+        if (currentPending?.actorId === actorParticipantId && currentPending.billSnapshot === bill) {
+          this.inFlightActors.delete(bill.id);
+        }
+      }
     }
   }
 

@@ -72,8 +72,8 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
     const targetId = billId || bill?.id;
     if (!targetId) return;
 
-    // Only the organizer device marks the organizer's share and seeds the cloud snapshot on mount
-    if (!isGuestBrowser && bill) {
+    // Only the organizer device auto-marks the organizer's share for non-manual scanned receipts
+    if (!isGuestBrowser && bill && !bill.isManual) {
       const orgParticipant = bill.participants.find(
         (p) => p.isOrganizer || p.id === 'user_me' || p.id === bill.organizerId
       );
@@ -189,12 +189,16 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
     const isOrg =
       Boolean(p.isOrganizer) || p.id === 'user_me' || p.id === bill.organizerId;
     const breakdown = getBillShareBreakdown(bill.id, p.id);
-    const isParticipantSettled = isOrg || p.status === 'paid';
+    const isParticipantSettled = bill.isManual
+      ? p.status === 'paid'
+      : isOrg || p.status === 'paid';
     const settledVal = isOrg
-      ? (bill.isManual
-          ? (breakdown.totalDue > 0 ? breakdown.totalDue : (p.paidAmount || 0))
-          : breakdown.totalDue)
-      : (p.paidAmount || breakdown.totalDue);
+      ? bill.isManual
+        ? p.status === 'paid' && p.paidAmount !== undefined
+          ? p.paidAmount
+          : 0
+        : breakdown.totalDue
+      : p.paidAmount || breakdown.totalDue;
 
     if (isParticipantSettled) {
       rawCollectedAmount += settledVal;
@@ -217,7 +221,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
   // Don't change status to settled unless ALL the money has been covered
   const allMoneyCovered =
     grandTotal > 0 &&
-    Math.round(collectedAmount * 100) >= Math.round(grandTotal * 100) - 5;
+    Math.round(collectedAmount * 100) >= Math.round(grandTotal * 100);
   const isFullySettled =
     (bill.status === 'settled' || (paidCount === bill.participants.length && bill.participants.length > 0)) &&
     allMoneyCovered;
@@ -292,7 +296,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
               <Text style={[styles.heroLabel, { color: colors.textSecondary }]}>
                 {t('collectedOfTotal')}
               </Text>
-              <Text style={[styles.heroAmount, { color: colors.accent }]} numberOfLines={1}>
+              <Text testID="summary-collected-text" style={[styles.heroAmount, { color: colors.accent }]} numberOfLines={1}>
                 €{collectedAmount.toFixed(2)}{' '}
                 <Text style={[styles.heroTotal, { color: colors.textTertiary }]}>
                   / €{grandTotal.toFixed(2)}
@@ -301,6 +305,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
             </View>
 
             <View
+              testID="summary-status-badge"
               style={[
                 styles.statusBadgeLarge,
                 {
@@ -344,7 +349,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
                     {t('myConsumedShare')}
                   </Text>
                 </View>
-                <Text style={[styles.splitSubcolValue, { color: colors.accent }]} numberOfLines={1}>
+                <Text testID="summary-organizer-share" style={[styles.splitSubcolValue, { color: colors.accent }]} numberOfLines={1}>
                   €{organizerSettledAmount.toFixed(2)}
                 </Text>
               </View>
@@ -366,6 +371,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
                   </Text>
                 </View>
                 <Text
+                  testID="summary-remaining-text"
                   style={[
                     styles.splitSubcolValue,
                     { color: isFullySettled || friendsRemainingTotal <= 0 ? colors.accent : colors.amber },
@@ -399,6 +405,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
           {/* Action Row: Copy Link, QR Code & Re-Itemize */}
           <View style={styles.actionRow}>
             <TouchableOpacity
+              testID="summary-share-link-btn"
               onPress={handleCopyLink}
               style={[
                 styles.smallActionBtn,
@@ -420,6 +427,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
             </TouchableOpacity>
 
             <TouchableOpacity
+              testID="summary-qr-btn"
               onPress={() => {
                 lightImpact();
                 setIsQrModalVisible(true);
@@ -445,6 +453,7 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
 
             {!isGuestBrowser && (
               <TouchableOpacity
+                testID="summary-modify-btn"
                 onPress={() => onItemizeAgain(bill.id)}
                 style={[
                   styles.smallActionBtn,
@@ -466,6 +475,48 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
             )}
           </View>
         </View>
+
+        {!isGuestBrowser &&
+          bill.isManual &&
+          organizer &&
+          (organizer.status !== 'paid' ||
+            Math.abs((organizer.paidAmount || 0) - organizerSettledAmount) > 0.005) && (
+            <TouchableOpacity
+              testID="summary-confirm-organizer-settlement-btn"
+              activeOpacity={0.85}
+              onPress={() => {
+                lightImpact();
+                const latestBreakdown = getBillShareBreakdown(bill.id, organizer.id);
+                const settleAmount =
+                  latestBreakdown.totalDue > 0 ? latestBreakdown.totalDue : organizerSettledAmount;
+                markParticipantPaid(
+                  bill.id,
+                  organizer.id,
+                  organizer.paymentMethod || 'card',
+                  settleAmount
+                );
+                successNotification();
+              }}
+              style={[
+                styles.payoutSection,
+                {
+                  backgroundColor: colors.accentLight,
+                  borderColor: colors.accent,
+                  paddingVertical: SPACING.md,
+                  marginBottom: SPACING.md,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                },
+              ]}
+            >
+              <ShieldCheck size={18} color={colors.accent} />
+              <Text style={{ color: colors.accent, fontWeight: '800', fontSize: 14 }}>
+                {t('confirmMySharePaidCta')} (€{organizerSettledAmount.toFixed(2)})
+              </Text>
+            </TouchableOpacity>
+          )}
 
         {/* Live Status Deck with Diner Statuses and Nudge Buttons */}
         <LiveStatusDeck

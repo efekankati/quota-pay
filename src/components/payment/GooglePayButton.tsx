@@ -15,6 +15,7 @@ interface GooglePayButtonProps {
   onPress: () => void;
   isLoading?: boolean;
   disabled?: boolean;
+  testID?: string;
 }
 
 export const GooglePayButton: React.FC<GooglePayButtonProps> = ({
@@ -22,6 +23,7 @@ export const GooglePayButton: React.FC<GooglePayButtonProps> = ({
   onPress,
   isLoading = false,
   disabled = false,
+  testID = 'payment-google-pay-btn',
 }) => {
   const { heavyImpact } = useHaptics();
   const { t } = useLanguageStore();
@@ -35,6 +37,7 @@ export const GooglePayButton: React.FC<GooglePayButtonProps> = ({
 
   return (
     <TouchableOpacity
+      testID={testID}
       activeOpacity={0.85}
       onPress={handlePress}
       disabled={disabled || isLoading}

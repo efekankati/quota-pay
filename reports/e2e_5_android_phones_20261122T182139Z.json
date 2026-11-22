@@ -1,0 +1,1224 @@
+{
+  "started_at": "2026-11-22T18:21:39.296100+00:00",
+  "seed": 1795371699,
+  "headless_guests": true,
+  "apk_path": "C:\\Users\\efeka\\.gemini\\antigravity-ide\\scratch\\quota\\android\\app\\build\\outputs\\apk\\debug\\app-debug.apk",
+  "expected_grand_total_cents": 16650,
+  "status": "PASSED",
+  "boot_duration_s": 104.48,
+  "install_duration_s": 32.41,
+  "bill_id": "bill_1795371976236",
+  "deep_link_url": "quota://bill/bill_1795371976236?mode=guest",
+  "randomized_allocations": {
+    "seed": 1795371699,
+    "item_4_single": "Elena",
+    "multi_qty_items": {
+      "3": [
+        "Elena",
+        "Marco"
+      ],
+      "5": [
+        "Sara",
+        "Marco",
+        "Marco"
+      ],
+      "6": [
+        "Marco",
+        "Davide"
+      ]
+    }
+  },
+  "verification": {
+    "phone1_ui": {
+      "collected_text": "\u20ac166.50",
+      "status_badge": "100% SETTLED",
+      "participant_rows": [
+        {
+          "index": 0,
+          "name": "Ilaria di Piu Bella in Mondo",
+          "status": "Settled",
+          "amount": "\u20ac16.00",
+          "cents": 1600
+        },
+        {
+          "index": 1,
+          "name": "Marco",
+          "status": "Settled \u2022 GOOGLE PAY",
+          "amount": "\u20ac62.34",
+          "cents": 6234
+        },
+        {
+          "index": 2,
+          "name": "Sara",
+          "status": "Settled \u2022 GOOGLE PAY",
+          "amount": "\u20ac14.33",
+          "cents": 1433
+        },
+        {
+          "index": 3,
+          "name": "Elena",
+          "status": "Settled \u2022 SEPA IBAN",
+          "amount": "\u20ac41.33",
+          "cents": 4133
+        },
+        {
+          "index": 4,
+          "name": "Davide",
+          "status": "Settled \u2022 SEPA IBAN",
+          "amount": "\u20ac32.50",
+          "cents": 3250
+        }
+      ],
+      "sum_cents": 16650,
+      "diff_cents": 0
+    },
+    "supabase": {
+      "bills_row_id": "ef8b9a62-c71f-4975-ac4e-43df80a61ee3",
+      "bills_status": "completed",
+      "bills_total_cents": 16650,
+      "cloud_paid_sum_cents": 16650,
+      "diff_cents": 0,
+      "bill_splits_count": 0,
+      "bill_splits_sum_cents": null,
+      "bill_items_count": 0
+    }
+  },
+  "settled_bill": {
+    "id": "bill_1795371976236",
+    "title": "Trattoria Quota 5-Phone E2E",
+    "restaurantName": "Trattoria Quota 5-Phone E2E",
+    "createdAt": "2026-11-22T18:26:16.237Z",
+    "currency": "EUR",
+    "status": "settled",
+    "organizerId": "user_me",
+    "participants": [
+      {
+        "id": "user_me",
+        "name": "Ilaria di Piu Bella in Mondo",
+        "isOrganizer": true,
+        "status": "paid",
+        "paymentMethod": "card",
+        "paidAt": "2026-11-22T18:36:07.604Z",
+        "paidAmount": 16,
+        "splitId": "split_bill_1795371976236_user_me"
+      },
+      {
+        "id": "part_1795371976237_3jzpl2mt",
+        "name": "Marco",
+        "isOrganizer": false,
+        "status": "paid",
+        "splitId": "split_1795371976236_1795371976237_3jzpl2mt",
+        "paidAmount": 62.34,
+        "paidAt": "2026-11-22T18:35:37.359Z",
+        "paymentMethod": "google_pay"
+      },
+      {
+        "id": "part_1795371976237_htcovo8dl",
+        "name": "Sara",
+        "isOrganizer": false,
+        "status": "paid",
+        "splitId": "split_1795371976236_1795371976237_htcovo8dl",
+        "paidAmount": 14.33,
+        "paidAt": "2026-11-22T18:34:52.605Z",
+        "paymentMethod": "google_pay"
+      },
+      {
+        "id": "part_1795371976237_cj6zq2jk",
+        "name": "Elena",
+        "isOrganizer": false,
+        "status": "paid",
+        "splitId": "split_1795371976236_1795371976237_cj6zq2jk",
+        "paidAmount": 41.33,
+        "paidAt": "2026-11-22T18:35:36.855Z",
+        "paymentMethod": "sepa_iban"
+      },
+      {
+        "id": "part_1795371976237_rjfaf2ua",
+        "name": "Davide",
+        "isOrganizer": false,
+        "status": "paid",
+        "splitId": "split_1795371976236_1795371976237_rjfaf2ua",
+        "paidAmount": 32.5,
+        "paidAt": "2026-11-22T18:35:37.182Z",
+        "paymentMethod": "sepa_iban"
+      }
+    ],
+    "items": [
+      {
+        "id": "item_1795372005162_1ybmgvw",
+        "name": "Coperto",
+        "rawText": "5 Coperto 12.50",
+        "quantity": 5,
+        "unitPrice": 2.5,
+        "totalPrice": 12.5,
+        "vatRate": 10,
+        "isCoperto": true,
+        "assignedParticipantIds": [
+          "user_me",
+          "part_1795371976237_3jzpl2mt",
+          "part_1795371976237_htcovo8dl",
+          "part_1795371976237_cj6zq2jk",
+          "part_1795371976237_rjfaf2ua"
+        ],
+        "claimedQuantities": {}
+      },
+      {
+        "id": "item_1795372053817_y5kwlgy",
+        "name": "Rigatoni all'Amatriciana",
+        "rawText": "1 Rigatoni all'Amatriciana 13.50",
+        "quantity": 1,
+        "unitPrice": 13.5,
+        "totalPrice": 13.5,
+        "vatRate": 10,
+        "isCoperto": false,
+        "assignedParticipantIds": [
+          "user_me"
+        ],
+        "claimedQuantities": {}
+      },
+      {
+        "id": "item_1795372080365_oalq9d35",
+        "name": "Tagliere Antipasto Condiviso",
+        "rawText": "1 Tagliere Antipasto Condiviso 16.00",
+        "quantity": 1,
+        "unitPrice": 16,
+        "totalPrice": 16,
+        "vatRate": 10,
+        "isCoperto": false,
+        "assignedParticipantIds": [
+          "part_1795371976237_3jzpl2mt",
+          "part_1795371976237_cj6zq2jk",
+          "part_1795371976237_htcovo8dl"
+        ],
+        "claimedQuantities": {}
+      },
+      {
+        "id": "item_1795372114918_ttogt9fmo",
+        "name": "Spaghetti alla Carbonara",
+        "rawText": "2 Spaghetti alla Carbonara 28.00",
+        "quantity": 2,
+        "unitPrice": 14,
+        "totalPrice": 28,
+        "vatRate": 10,
+        "isCoperto": false,
+        "assignedParticipantIds": [
+          "part_1795371976237_3jzpl2mt",
+          "part_1795371976237_rjfaf2ua"
+        ],
+        "claimedQuantities": {
+          "part_1795371976237_rjfaf2ua": 1,
+          "part_1795371976237_3jzpl2mt": 1
+        }
+      },
+      {
+        "id": "item_1795372148954_rqe9jww",
+        "name": "Pizza Margherita DOP",
+        "rawText": "2 Pizza Margherita DOP 23.00",
+        "quantity": 2,
+        "unitPrice": 11.5,
+        "totalPrice": 23,
+        "vatRate": 10,
+        "isCoperto": false,
+        "assignedParticipantIds": [
+          "part_1795371976237_3jzpl2mt",
+          "part_1795371976237_cj6zq2jk"
+        ],
+        "claimedQuantities": {
+          "part_1795371976237_3jzpl2mt": 1,
+          "part_1795371976237_cj6zq2jk": 1
+        }
+      },
+      {
+        "id": "item_1795372171630_whocar5s",
+        "name": "Tagliata di Manzo",
+        "rawText": "1 Tagliata di Manzo 22.00",
+        "quantity": 1,
+        "unitPrice": 22,
+        "totalPrice": 22,
+        "vatRate": 10,
+        "isCoperto": false,
+        "assignedParticipantIds": [
+          "part_1795371976237_cj6zq2jk"
+        ],
+        "claimedQuantities": {}
+      },
+      {
+        "id": "item_1795372200493_dpa1z6n",
+        "name": "Tiramisu della Casa",
+        "rawText": "3 Tiramisu della Casa 19.50",
+        "quantity": 3,
+        "unitPrice": 6.5,
+        "totalPrice": 19.5,
+        "vatRate": 10,
+        "isCoperto": false,
+        "assignedParticipantIds": [
+          "part_1795371976237_3jzpl2mt",
+          "part_1795371976237_htcovo8dl"
+        ],
+        "claimedQuantities": {
+          "part_1795371976237_3jzpl2mt": 2,
+          "part_1795371976237_htcovo8dl": 1
+        }
+      },
+      {
+        "id": "item_1795372222402_yp9vcs0m",
+        "name": "Vino Chianti Classico 1L",
+        "rawText": "2 Vino Chianti Classico 1L 32.00",
+        "quantity": 2,
+        "unitPrice": 16,
+        "totalPrice": 32,
+        "vatRate": 10,
+        "isCoperto": false,
+        "assignedParticipantIds": [
+          "part_1795371976237_3jzpl2mt",
+          "part_1795371976237_rjfaf2ua"
+        ],
+        "claimedQuantities": {
+          "part_1795371976237_rjfaf2ua": 1,
+          "part_1795371976237_3jzpl2mt": 1
+        }
+      }
+    ],
+    "copertoPerPerson": 2.5,
+    "tipPercentage": 0,
+    "taxSummary": {
+      "subtotal": 151.36,
+      "totalVat": 15.14,
+      "copertoTotal": 12.5,
+      "serviceCharge": 0,
+      "discount": 0,
+      "grandTotal": 166.5
+    },
+    "splitMode": "by_item",
+    "manualTotalAmount": 166.5,
+    "includedParticipantIds": [
+      "user_me",
+      "part_1795371976237_3jzpl2mt",
+      "part_1795371976237_htcovo8dl",
+      "part_1795371976237_cj6zq2jk",
+      "part_1795371976237_rjfaf2ua"
+    ],
+    "isManual": true,
+    "organizerIban": "IT60X0542811101000000123456",
+    "organizerBankName": "Intesa Sanpaolo S.p.A.",
+    "organizerAccountHolder": "Ilaria di Piu Bella in Mondo"
+  },
+  "finished_at": "2026-11-22T18:37:29.328047+00:00",
+  "total_duration_s": 950.03,
+  "device_logs": {
+    "emulator-5554": [
+      {
+        "ts": "2026-11-22T18:24:42.806472+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "ready",
+        "detail": "Landed on HomeScreen"
+      },
+      {
+        "ts": "2026-11-22T18:24:42.806536+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "step_1",
+        "detail": "Creating 5-person manual receipt with 7 line items + Italian coperto"
+      },
+      {
+        "ts": "2026-11-22T18:24:49.955707+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "fab-trigger"
+      },
+      {
+        "ts": "2026-11-22T18:25:02.950473+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "fab-manual-btn"
+      },
+      {
+        "ts": "2026-11-22T18:25:15.591470+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "home-manual-title-input='Trattoria Quota 5-Phone E2E'"
+      },
+      {
+        "ts": "2026-11-22T18:25:22.708493+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "home-manual-participant-input='Marco'"
+      },
+      {
+        "ts": "2026-11-22T18:25:30.240997+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "home-manual-add-participant-btn"
+      },
+      {
+        "ts": "2026-11-22T18:25:37.463063+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "home-manual-participant-input='Sara'"
+      },
+      {
+        "ts": "2026-11-22T18:25:44.296733+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "home-manual-add-participant-btn"
+      },
+      {
+        "ts": "2026-11-22T18:25:51.196660+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "home-manual-participant-input='Elena'"
+      },
+      {
+        "ts": "2026-11-22T18:25:57.073066+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "home-manual-add-participant-btn"
+      },
+      {
+        "ts": "2026-11-22T18:26:03.597892+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "home-manual-participant-input='Davide'"
+      },
+      {
+        "ts": "2026-11-22T18:26:10.349851+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "home-manual-add-participant-btn"
+      },
+      {
+        "ts": "2026-11-22T18:26:17.109506+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "home-manual-create-btn"
+      },
+      {
+        "ts": "2026-11-22T18:26:31.357043+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-mode-by-item"
+      },
+      {
+        "ts": "2026-11-22T18:26:46.061830+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-coperto-toggle"
+      },
+      {
+        "ts": "2026-11-22T18:26:58.319525+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-coperto-amount-input='2.50'"
+      },
+      {
+        "ts": "2026-11-22T18:27:05.539436+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "coperto_configured",
+        "detail": "Coperto = \u20ac12.50"
+      },
+      {
+        "ts": "2026-11-22T18:27:11.881175+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-add-item-btn"
+      },
+      {
+        "ts": "2026-11-22T18:27:24.225761+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-name-input=\"Rigatoni all'Amatriciana\""
+      },
+      {
+        "ts": "2026-11-22T18:27:29.672595+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-price-input='13.50'"
+      },
+      {
+        "ts": "2026-11-22T18:27:34.689697+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-submit-btn"
+      },
+      {
+        "ts": "2026-11-22T18:27:39.816219+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-add-item-btn"
+      },
+      {
+        "ts": "2026-11-22T18:27:50.302553+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-name-input='Tagliere Antipasto Condiviso'"
+      },
+      {
+        "ts": "2026-11-22T18:27:55.725398+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-price-input='16.00'"
+      },
+      {
+        "ts": "2026-11-22T18:28:01.270787+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-submit-btn"
+      },
+      {
+        "ts": "2026-11-22T18:28:07.146527+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-add-item-btn"
+      },
+      {
+        "ts": "2026-11-22T18:28:17.971571+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-name-input='Spaghetti alla Carbonara'"
+      },
+      {
+        "ts": "2026-11-22T18:28:23.569935+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-price-input='14.00'"
+      },
+      {
+        "ts": "2026-11-22T18:28:29.596568+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-qty-plus"
+      },
+      {
+        "ts": "2026-11-22T18:28:35.844178+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-submit-btn"
+      },
+      {
+        "ts": "2026-11-22T18:28:42.724930+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-add-item-btn"
+      },
+      {
+        "ts": "2026-11-22T18:28:53.966704+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-name-input='Pizza Margherita DOP'"
+      },
+      {
+        "ts": "2026-11-22T18:28:59.285298+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-price-input='11.50'"
+      },
+      {
+        "ts": "2026-11-22T18:29:04.561611+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-qty-plus"
+      },
+      {
+        "ts": "2026-11-22T18:29:09.832609+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-submit-btn"
+      },
+      {
+        "ts": "2026-11-22T18:29:14.728398+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-add-item-btn"
+      },
+      {
+        "ts": "2026-11-22T18:29:23.377310+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-name-input='Tagliata di Manzo'"
+      },
+      {
+        "ts": "2026-11-22T18:29:27.981877+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-price-input='22.00'"
+      },
+      {
+        "ts": "2026-11-22T18:29:32.506602+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-submit-btn"
+      },
+      {
+        "ts": "2026-11-22T18:29:36.856922+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-add-item-btn"
+      },
+      {
+        "ts": "2026-11-22T18:29:45.510264+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-name-input='Tiramisu della Casa'"
+      },
+      {
+        "ts": "2026-11-22T18:29:49.426841+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-price-input='6.50'"
+      },
+      {
+        "ts": "2026-11-22T18:29:53.396334+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-qty-plus"
+      },
+      {
+        "ts": "2026-11-22T18:29:57.395194+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-qty-plus"
+      },
+      {
+        "ts": "2026-11-22T18:30:01.393702+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-submit-btn"
+      },
+      {
+        "ts": "2026-11-22T18:30:05.425245+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-add-item-btn"
+      },
+      {
+        "ts": "2026-11-22T18:30:12.621701+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-name-input='Vino Chianti Classico 1L'"
+      },
+      {
+        "ts": "2026-11-22T18:30:16.203283+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "type",
+        "detail": "manual-item-price-input='16.00'"
+      },
+      {
+        "ts": "2026-11-22T18:30:19.637169+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-qty-plus"
+      },
+      {
+        "ts": "2026-11-22T18:30:23.267045+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-submit-btn"
+      },
+      {
+        "ts": "2026-11-22T18:30:30.592974+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-toggle-all-0"
+      },
+      {
+        "ts": "2026-11-22T18:30:37.716610+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-toggle-all-1"
+      },
+      {
+        "ts": "2026-11-22T18:30:46.035312+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-toggle-all-2"
+      },
+      {
+        "ts": "2026-11-22T18:30:53.024929+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-toggle-all-3"
+      },
+      {
+        "ts": "2026-11-22T18:31:00.158479+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-toggle-all-4"
+      },
+      {
+        "ts": "2026-11-22T18:31:07.813861+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-toggle-all-5"
+      },
+      {
+        "ts": "2026-11-22T18:31:15.627625+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-toggle-all-6"
+      },
+      {
+        "ts": "2026-11-22T18:31:19.179218+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-item-chip-0-0"
+      },
+      {
+        "ts": "2026-11-22T18:31:31.191279+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-qr-btn"
+      },
+      {
+        "ts": "2026-11-22T18:31:39.534971+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "qr-modal-copy-link-btn"
+      },
+      {
+        "ts": "2026-11-22T18:31:43.654347+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "qr-modal-close-btn"
+      },
+      {
+        "ts": "2026-11-22T18:31:48.041763+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "manual-generate-share-btn"
+      },
+      {
+        "ts": "2026-11-22T18:31:56.595274+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "bill_published",
+        "detail": "bill_id=bill_1795371976236 total=\u20ac166.50"
+      },
+      {
+        "ts": "2026-11-22T18:33:36.408488+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "conflict_test_1_passed",
+        "detail": "3-way overlapping claim on item 1 converged cleanly: ['part_1795371976237_3jzpl2mt', 'part_1795371976237_cj6zq2jk', 'part_1795371976237_htcovo8dl']"
+      },
+      {
+        "ts": "2026-11-22T18:33:54.390491+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "conflict_test_2_passed",
+        "detail": "qty=2 concurrent race capped safely at 2/2: {'part_1795371976237_rjfaf2ua': 1, 'part_1795371976237_3jzpl2mt': 1}"
+      },
+      {
+        "ts": "2026-11-22T18:36:08.466199+00:00",
+        "role": "organizer",
+        "guest_name": null,
+        "serial": "emulator-5554",
+        "action": "tap",
+        "detail": "summary-confirm-organizer-settlement-btn"
+      }
+    ],
+    "emulator-5556": [
+      {
+        "ts": "2026-11-22T18:32:57.511460+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "type",
+        "detail": "guest-name-input='Marco'"
+      },
+      {
+        "ts": "2026-11-22T18:33:04.474649+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "tap",
+        "detail": "guest-join-btn"
+      },
+      {
+        "ts": "2026-11-22T18:33:19.909802+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "synced_and_joined",
+        "detail": "All 7 items + coperto synced; Item 0 locked for organizer"
+      },
+      {
+        "ts": "2026-11-22T18:33:25.712222+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "tap",
+        "detail": "guest-item-claim-btn-1"
+      },
+      {
+        "ts": "2026-11-22T18:33:41.673617+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "tap",
+        "detail": "guest-item-plus-2"
+      },
+      {
+        "ts": "2026-11-22T18:34:25.153453+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "tap",
+        "detail": "guest-item-plus-3"
+      },
+      {
+        "ts": "2026-11-22T18:34:35.217326+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "tap",
+        "detail": "guest-item-plus-5"
+      },
+      {
+        "ts": "2026-11-22T18:34:39.802360+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "tap",
+        "detail": "guest-item-plus-5"
+      },
+      {
+        "ts": "2026-11-22T18:34:44.843341+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "tap",
+        "detail": "guest-item-plus-6"
+      },
+      {
+        "ts": "2026-11-22T18:35:15.521874+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "share_verified",
+        "detail": "UI share=Your Share: \u20ac62.34 (6234c)"
+      },
+      {
+        "ts": "2026-11-22T18:35:29.286316+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "tap",
+        "detail": "guest-proceed-payment-btn"
+      },
+      {
+        "ts": "2026-11-22T18:35:37.942640+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "tap",
+        "detail": "payment-google-pay-btn"
+      },
+      {
+        "ts": "2026-11-22T18:35:48.693334+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "tap",
+        "detail": "alert-modal-btn-0"
+      },
+      {
+        "ts": "2026-11-22T18:35:54.554749+00:00",
+        "role": "guest",
+        "guest_name": "Marco",
+        "serial": "emulator-5556",
+        "action": "payment_completed",
+        "detail": "Paid via payment-google-pay-btn"
+      }
+    ],
+    "emulator-5558": [
+      {
+        "ts": "2026-11-22T18:32:44.788165+00:00",
+        "role": "guest",
+        "guest_name": "Sara",
+        "serial": "emulator-5558",
+        "action": "type",
+        "detail": "guest-name-input='Sara'"
+      },
+      {
+        "ts": "2026-11-22T18:32:50.886402+00:00",
+        "role": "guest",
+        "guest_name": "Sara",
+        "serial": "emulator-5558",
+        "action": "tap",
+        "detail": "guest-join-btn"
+      },
+      {
+        "ts": "2026-11-22T18:33:10.534886+00:00",
+        "role": "guest",
+        "guest_name": "Sara",
+        "serial": "emulator-5558",
+        "action": "synced_and_joined",
+        "detail": "All 7 items + coperto synced; Item 0 locked for organizer"
+      },
+      {
+        "ts": "2026-11-22T18:33:25.577828+00:00",
+        "role": "guest",
+        "guest_name": "Sara",
+        "serial": "emulator-5558",
+        "action": "tap",
+        "detail": "guest-item-claim-btn-1"
+      },
+      {
+        "ts": "2026-11-22T18:33:42.464572+00:00",
+        "role": "guest",
+        "guest_name": "Sara",
+        "serial": "emulator-5558",
+        "action": "tap",
+        "detail": "guest-item-plus-2"
+      },
+      {
+        "ts": "2026-11-22T18:34:30.516249+00:00",
+        "role": "guest",
+        "guest_name": "Sara",
+        "serial": "emulator-5558",
+        "action": "tap",
+        "detail": "guest-item-plus-5"
+      },
+      {
+        "ts": "2026-11-22T18:35:18.703910+00:00",
+        "role": "guest",
+        "guest_name": "Sara",
+        "serial": "emulator-5558",
+        "action": "share_verified",
+        "detail": "UI share=Your Share: \u20ac14.33 (1433c)"
+      },
+      {
+        "ts": "2026-11-22T18:35:28.792778+00:00",
+        "role": "guest",
+        "guest_name": "Sara",
+        "serial": "emulator-5558",
+        "action": "tap",
+        "detail": "guest-proceed-payment-btn"
+      },
+      {
+        "ts": "2026-11-22T18:35:37.764527+00:00",
+        "role": "guest",
+        "guest_name": "Sara",
+        "serial": "emulator-5558",
+        "action": "tap",
+        "detail": "payment-google-pay-btn"
+      },
+      {
+        "ts": "2026-11-22T18:35:48.400238+00:00",
+        "role": "guest",
+        "guest_name": "Sara",
+        "serial": "emulator-5558",
+        "action": "tap",
+        "detail": "alert-modal-btn-0"
+      },
+      {
+        "ts": "2026-11-22T18:35:54.542822+00:00",
+        "role": "guest",
+        "guest_name": "Sara",
+        "serial": "emulator-5558",
+        "action": "payment_completed",
+        "detail": "Paid via payment-google-pay-btn"
+      }
+    ],
+    "emulator-5560": [
+      {
+        "ts": "2026-11-22T18:32:51.315769+00:00",
+        "role": "guest",
+        "guest_name": "Elena",
+        "serial": "emulator-5560",
+        "action": "type",
+        "detail": "guest-name-input='Elena'"
+      },
+      {
+        "ts": "2026-11-22T18:32:57.890265+00:00",
+        "role": "guest",
+        "guest_name": "Elena",
+        "serial": "emulator-5560",
+        "action": "tap",
+        "detail": "guest-join-btn"
+      },
+      {
+        "ts": "2026-11-22T18:33:15.704615+00:00",
+        "role": "guest",
+        "guest_name": "Elena",
+        "serial": "emulator-5560",
+        "action": "synced_and_joined",
+        "detail": "All 7 items + coperto synced; Item 0 locked for organizer"
+      },
+      {
+        "ts": "2026-11-22T18:33:25.639947+00:00",
+        "role": "guest",
+        "guest_name": "Elena",
+        "serial": "emulator-5560",
+        "action": "tap",
+        "detail": "guest-item-claim-btn-1"
+      },
+      {
+        "ts": "2026-11-22T18:34:15.591152+00:00",
+        "role": "guest",
+        "guest_name": "Elena",
+        "serial": "emulator-5560",
+        "action": "tap",
+        "detail": "guest-item-claim-btn-4"
+      },
+      {
+        "ts": "2026-11-22T18:34:20.407630+00:00",
+        "role": "guest",
+        "guest_name": "Elena",
+        "serial": "emulator-5560",
+        "action": "tap",
+        "detail": "guest-item-plus-3"
+      },
+      {
+        "ts": "2026-11-22T18:35:21.863172+00:00",
+        "role": "guest",
+        "guest_name": "Elena",
+        "serial": "emulator-5560",
+        "action": "share_verified",
+        "detail": "UI share=Your Share: \u20ac41.33 (4133c)"
+      },
+      {
+        "ts": "2026-11-22T18:35:29.042476+00:00",
+        "role": "guest",
+        "guest_name": "Elena",
+        "serial": "emulator-5560",
+        "action": "tap",
+        "detail": "guest-proceed-payment-btn"
+      },
+      {
+        "ts": "2026-11-22T18:35:37.820298+00:00",
+        "role": "guest",
+        "guest_name": "Elena",
+        "serial": "emulator-5560",
+        "action": "tap",
+        "detail": "payment-sepa-btn"
+      },
+      {
+        "ts": "2026-11-22T18:35:48.269033+00:00",
+        "role": "guest",
+        "guest_name": "Elena",
+        "serial": "emulator-5560",
+        "action": "tap",
+        "detail": "alert-modal-btn-0"
+      },
+      {
+        "ts": "2026-11-22T18:35:54.445637+00:00",
+        "role": "guest",
+        "guest_name": "Elena",
+        "serial": "emulator-5560",
+        "action": "payment_completed",
+        "detail": "Paid via payment-sepa-btn"
+      }
+    ],
+    "emulator-5562": [
+      {
+        "ts": "2026-11-22T18:32:44.954956+00:00",
+        "role": "guest",
+        "guest_name": "Davide",
+        "serial": "emulator-5562",
+        "action": "type",
+        "detail": "guest-name-input='Davide'"
+      },
+      {
+        "ts": "2026-11-22T18:32:50.940390+00:00",
+        "role": "guest",
+        "guest_name": "Davide",
+        "serial": "emulator-5562",
+        "action": "tap",
+        "detail": "guest-join-btn"
+      },
+      {
+        "ts": "2026-11-22T18:33:11.142324+00:00",
+        "role": "guest",
+        "guest_name": "Davide",
+        "serial": "emulator-5562",
+        "action": "synced_and_joined",
+        "detail": "All 7 items + coperto synced; Item 0 locked for organizer"
+      },
+      {
+        "ts": "2026-11-22T18:33:41.729098+00:00",
+        "role": "guest",
+        "guest_name": "Davide",
+        "serial": "emulator-5562",
+        "action": "tap",
+        "detail": "guest-item-plus-2"
+      },
+      {
+        "ts": "2026-11-22T18:34:49.062928+00:00",
+        "role": "guest",
+        "guest_name": "Davide",
+        "serial": "emulator-5562",
+        "action": "tap",
+        "detail": "guest-item-plus-6"
+      },
+      {
+        "ts": "2026-11-22T18:35:24.882560+00:00",
+        "role": "guest",
+        "guest_name": "Davide",
+        "serial": "emulator-5562",
+        "action": "share_verified",
+        "detail": "UI share=Your Share: \u20ac32.50 (3250c)"
+      },
+      {
+        "ts": "2026-11-22T18:35:28.769686+00:00",
+        "role": "guest",
+        "guest_name": "Davide",
+        "serial": "emulator-5562",
+        "action": "tap",
+        "detail": "guest-proceed-payment-btn"
+      },
+      {
+        "ts": "2026-11-22T18:35:37.976337+00:00",
+        "role": "guest",
+        "guest_name": "Davide",
+        "serial": "emulator-5562",
+        "action": "tap",
+        "detail": "payment-sepa-btn"
+      },
+      {
+        "ts": "2026-11-22T18:35:48.395992+00:00",
+        "role": "guest",
+        "guest_name": "Davide",
+        "serial": "emulator-5562",
+        "action": "tap",
+        "detail": "alert-modal-btn-0"
+      },
+      {
+        "ts": "2026-11-22T18:35:54.781058+00:00",
+        "role": "guest",
+        "guest_name": "Davide",
+        "serial": "emulator-5562",
+        "action": "payment_completed",
+        "detail": "Paid via payment-sepa-btn"
+      }
+    ]
+  }
+}
