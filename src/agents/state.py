@@ -194,7 +194,10 @@ class AgentState(TypedDict, total=False):
     post_remediation_findings: List[Dict[str, Any]]
 
     # Global orchestration audit trail & report locations
+    run_timestamp: str
     status: str
     agent_logs: List[Dict[str, Any]]
     report_json_path: str
     report_md_path: str
+    state_timeline_path: str
+    telemetry_overhead_ms: float

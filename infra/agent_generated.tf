@@ -1,17 +1,17 @@
 # =============================================================================
 # AUTONOMOUSLY AUTHORED BY AGENT 1 (terraform_author_agent)
-# Directive ID : dir-41bcf651dd
+# Directive ID : dir-2027e42cb3
 # Source       : mock-proxmox-first
 # Scenario     : all_edge
 # Revision     : 0
-# Generated At : 2026-11-20T18:36:33.814645+00:00
+# Generated At : 2026-11-22T16:41:28.047459+00:00
 # Author Notes :
 #   - Authored initial Proxmox-first Terraform config for scenario='all_edge' (enable_aws=False, nodes=['edge-primary']).
 # =============================================================================
 
 locals {
   agent_pipeline_spec = {
-    directive_id            = "dir-41bcf651dd"
+    directive_id            = "dir-2027e42cb3"
     source                  = "mock-proxmox-first"
     scenario                = "all_edge"
     revision                = 0
@@ -24,9 +24,9 @@ locals {
     "edge-primary" = {
       provider            = "proxmox"
       target_node         = "pve"
-      cpu_cores           = 4
-      memory_mb           = 2048
-      disk_gb             = 16
+      cpu_cores           = 2
+      memory_mb           = 1024
+      disk_gb             = 8
       virtualization_type = "lxc"
       enable_firewall     = true
       allowed_ports       = [80, 443]

@@ -13,15 +13,17 @@ from __future__ import annotations
 import copy
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from src.orchestrator.actuator import TerraformActuator
 from src.orchestrator.schema import NodeAllocation, PlacementPlan, ServiceType, TargetProvider
 
 from .rubrics import DANGEROUS_EXPOSED_PORTS
 from .state import AgentLogEntry, AgentPipelineConfig, AgentState
+from .telemetry import noop_emit
 
 
 def render_proxmox_agent_hcl(
@@ -111,8 +113,13 @@ class TerraformAuthorAgent:
 
     NAME = "terraform_author_agent"
 
-    def __init__(self, config: AgentPipelineConfig) -> None:
+    def __init__(
+        self,
+        config: AgentPipelineConfig,
+        emit: Optional[Callable[..., Any]] = None,
+    ) -> None:
         self.config = config
+        self.emit = emit or noop_emit
         self.actuator = TerraformActuator(project_root=config.project_root)
         self.actuator.infra_dir = config.resolved_infra_dir()
         self.actuator.docker_dir = config.resolved_docker_dir()
@@ -236,6 +243,7 @@ class TerraformAuthorAgent:
 
     def run(self, state: AgentState) -> AgentState:
         """Executes Agent 1 authoring (or policy-driven self-correction on retry)."""
+        started = time.perf_counter()
         directive = copy.deepcopy(state.get("directive") or {})
         retry_count = int(state.get("retry_count", 0))
         feedback = list(state.get("policy_feedback") or [])
@@ -243,6 +251,12 @@ class TerraformAuthorAgent:
         notes: List[str] = []
 
         if retry_count == 0 or not state.get("tfvars_data"):
+            self.emit(
+                "RUNNING",
+                "authoring Proxmox-first Terraform HCL & tfvars",
+                detail=f"scenario={directive.get('scenario', 'all_edge')}",
+                retry_count=retry_count,
+            )
             # Initial synthesis from FIGARO directive
             raw_plan = directive.get("placement_plan") or {}
             plan_obj = PlacementPlan(**raw_plan)
@@ -262,11 +276,22 @@ class TerraformAuthorAgent:
             )
         else:
             # Self-correction pass from Agent 2 feedback
+            self.emit(
+                "RETRYING",
+                "self-correcting from Agent 2 feedback",
+                detail=f"{len(feedback)} policy violation(s)",
+                retry_count=retry_count,
+            )
             tfvars_data = copy.deepcopy(state["tfvars_data"])
             fixes = self._apply_policy_feedback(directive, tfvars_data, feedback)
             notes.extend(fixes or ["Re-evaluated authored Terraform config after Agent 2 feedback."])
 
         # Write modular Terraform HCL file (`infra/agent_generated.tf`)
+        self.emit(
+            "RUNNING",
+            "writing agent_generated.tf & terraform.tfvars.json",
+            retry_count=retry_count,
+        )
         infra_dir = self.config.resolved_infra_dir()
         infra_dir.mkdir(parents=True, exist_ok=True)
         hcl_path = infra_dir / self.config.generated_hcl_filename
@@ -283,6 +308,7 @@ class TerraformAuthorAgent:
         tfvars_path.write_text(json.dumps(tfvars_data, indent=2), encoding="utf-8")
 
         # Generate docker/.env.placement aligned with the authored topology
+        self.emit("RUNNING", "generating docker/.env.placement", retry_count=retry_count)
         dotenv = self.actuator.load_root_dotenv()
         rebuilt_nodes: Dict[str, NodeAllocation] = {}
         for node_id, nspec in (tfvars_data.get("placement_plan") or {}).items():
@@ -325,6 +351,19 @@ class TerraformAuthorAgent:
                     "nodes": list((tfvars_data.get("placement_plan") or {}).keys()),
                 },
             ).model_dump()
+        )
+
+        node_names = list((tfvars_data.get("placement_plan") or {}).keys())
+        self.emit(
+            "PASSED",
+            "authored Terraform config",
+            detail=f"nodes={node_names}, enable_aws={bool(tfvars_data.get('enable_aws', False))}",
+            duration_ms=round((time.perf_counter() - started) * 1000.0, 2),
+            retry_count=retry_count,
+            metadata={
+                "nodes": node_names,
+                "enable_aws": bool(tfvars_data.get("enable_aws", False)),
+            },
         )
 
         return {

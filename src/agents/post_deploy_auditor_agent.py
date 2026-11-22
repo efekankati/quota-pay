@@ -17,8 +17,9 @@ from __future__ import annotations
 import copy
 import json
 import subprocess
+import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from src.orchestrator.actuator import TerraformActuator
 
@@ -30,6 +31,7 @@ from .state import (
     AuditFinding,
     RemediationAction,
 )
+from .telemetry import noop_emit
 from .terraform_author_agent import render_proxmox_agent_hcl
 
 
@@ -38,8 +40,13 @@ class PostDeployAuditorAgent:
 
     NAME = "post_deploy_auditor_agent"
 
-    def __init__(self, config: AgentPipelineConfig) -> None:
+    def __init__(
+        self,
+        config: AgentPipelineConfig,
+        emit: Optional[Callable[..., Any]] = None,
+    ) -> None:
         self.config = config
+        self.emit = emit or noop_emit
         self.actuator = TerraformActuator(project_root=config.project_root)
         self.actuator.infra_dir = config.resolved_infra_dir()
         self.actuator.docker_dir = config.resolved_docker_dir()
@@ -380,17 +387,20 @@ class PostDeployAuditorAgent:
 
     def run(self, state: AgentState) -> AgentState:
         """Executes post-deployment audit and autonomous remediation loop."""
+        started = time.perf_counter()
         directive = copy.deepcopy(state.get("directive") or {})
         tfvars_data = copy.deepcopy(state.get("tfvars_data") or {})
         retry_count = int(state.get("retry_count", 0))
         logs = list(state.get("agent_logs") or [])
 
+        self.emit("RUNNING", "collecting capability, security & performance telemetry")
         telemetry = self._enrich_live_proxmox_telemetry(state.get("observed_runtime_telemetry") or {})
         caddyfile_path = self.config.resolved_docker_dir() / "Caddyfile.ingress"
         cloud_init_path = self.config.resolved_infra_dir() / "modules" / "proxmox_node" / "cloud_init.yaml"
         caddy_text = caddyfile_path.read_text(encoding="utf-8") if caddyfile_path.exists() else ""
         cloud_init_text = cloud_init_path.read_text(encoding="utf-8") if cloud_init_path.exists() else ""
 
+        self.emit("RUNNING", "evaluating post-deployment audit rubric")
         initial_findings = evaluate_post_deploy_rubric(
             directive=directive,
             tfvars_data=tfvars_data,
@@ -404,6 +414,11 @@ class PostDeployAuditorAgent:
         post_findings = initial_findings
 
         if initial_findings and self.config.auto_remediate:
+            self.emit(
+                "RETRYING",
+                "applying autonomous security/performance remediations & re-verifying",
+                detail=f"{len(initial_findings)} finding(s) detected",
+            )
             remediations, re_valid = self._remediate_findings(
                 findings=initial_findings,
                 directive=directive,
@@ -464,6 +479,18 @@ class PostDeployAuditorAgent:
                     "audit_passed": audit_passed,
                 },
             ).model_dump()
+        )
+
+        self.emit(
+            "PASSED" if audit_passed else "FAILED",
+            "post-deployment audit complete",
+            detail=f"initial={len(initial_findings)}, remediated={len(remediations)}, remaining={len(post_findings)}",
+            duration_ms=round((time.perf_counter() - started) * 1000.0, 2),
+            metadata={
+                "initial_findings": len(initial_findings),
+                "remediations_applied": len(remediations),
+                "remaining_findings": len(post_findings),
+            },
         )
 
         return {

@@ -21,7 +21,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.agents import AgentPipelineConfig, MultiAgentSupervisor
+from src.agents import (
+    AgentEventBus,
+    AgentPipelineConfig,
+    LiveSSEServerObserver,
+    MultiAgentSupervisor,
+    build_terminal_observer,
+)
 from src.orchestrator.actuator import TerraformActuator
 from src.orchestrator.figaro_cli_bridge import read_piped_stdin_if_present
 
@@ -123,6 +129,27 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit final structured summary JSON to stdout",
     )
+    parser.add_argument(
+        "--no-tui",
+        action="store_true",
+        help="Disable Rich live terminal board and emit timestamped plain-text logs",
+    )
+    parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="Start lightweight local SSE live browser dashboard on http://127.0.0.1:8765",
+    )
+    parser.add_argument(
+        "--ui-port",
+        type=int,
+        default=8765,
+        help="TCP port for --ui live dashboard (default: 8765)",
+    )
+    parser.add_argument(
+        "--ui-keep-open",
+        action="store_true",
+        help="Keep the --ui dashboard server alive after pipeline completion until Ctrl+C",
+    )
 
     args = parser.parse_args(argv)
 
@@ -151,50 +178,103 @@ def main(argv: list[str] | None = None) -> int:
         auto_remediate=not bool(args.no_auto_remediate),
     )
 
-    supervisor = MultiAgentSupervisor(config=config)
-    final_state = supervisor.run(
-        prompt=args.prompt,
-        figaro_cmd=args.figaro_cmd,
-        figaro_stdin=stdin_payload,
-        figaro_file=args.figaro_file,
-    )
+    event_bus = AgentEventBus()
+    ui_server: LiveSSEServerObserver | None = None
+    ui_url: str | None = None
+    if args.ui or args.ui_keep_open:
+        ui_server = LiveSSEServerObserver(
+            port=args.ui_port,
+            prompt=args.prompt,
+            execution_mode=execution_mode,
+            enable_aws=bool(args.enable_aws),
+        )
+        ui_url = ui_server.start()
+        event_bus.subscribe(ui_server.on_state_change)
+        target_stream = sys.stderr if args.json else sys.stdout
+        print(f"Live Agent Dashboard: {ui_url}", file=target_stream, flush=True)
 
-    if args.json:
-        summary = {
-            "run_id": final_state.get("run_id"),
-            "status": final_state.get("status"),
-            "engine": supervisor.engine_name,
-            "execution_mode": execution_mode,
-            "enable_aws": bool((final_state.get("tfvars_data") or {}).get("enable_aws", False)),
-            "guard_approved": final_state.get("guard_approved", False),
-            "retry_count": final_state.get("retry_count", 0),
-            "deploy_succeeded": final_state.get("deploy_succeeded", False),
-            "audit_passed": final_state.get("audit_passed", False),
-            "remediations_applied": len(final_state.get("remediations_applied", [])),
-            "report_json_path": final_state.get("report_json_path"),
-            "report_md_path": final_state.get("report_md_path"),
-        }
-        print(json.dumps(summary, indent=2))
-    else:
-        print("=" * 76)
-        print("🤖 QUOTA PAY — PROXMOX-FIRST 4-AGENT AUTONOMOUS TERRAFORM PIPELINE")
-        print(f"   Run ID          : {final_state.get('run_id')}")
-        print(f"   Engine          : {supervisor.engine_name}")
-        print(f"   Execution Mode  : {execution_mode.upper()}")
-        print(f"   AWS Opt-In      : {bool((final_state.get('tfvars_data') or {}).get('enable_aws', False))}")
-        print(f"   Final Status    : {final_state.get('status')}")
-        print("=" * 76)
-        for entry in final_state.get("agent_logs", []):
-            print(
-                f"  [{entry.get('agent')}] ({entry.get('phase')} -> {entry.get('status')}): "
-                f"{entry.get('reasoning')}"
+    term_obs = build_terminal_observer(
+        prompt=args.prompt,
+        execution_mode=execution_mode,
+        enable_aws=bool(args.enable_aws),
+        no_tui=bool(args.no_tui),
+        json_mode=bool(args.json),
+        piped_stdin=bool(stdin_payload),
+        ui_url=ui_url,
+    )
+    event_bus.subscribe(term_obs.on_state_change)
+
+    supervisor = MultiAgentSupervisor(config=config, event_bus=event_bus)
+    term_obs.start()
+    try:
+        try:
+            final_state = supervisor.run(
+                prompt=args.prompt,
+                figaro_cmd=args.figaro_cmd,
+                figaro_stdin=stdin_payload,
+                figaro_file=args.figaro_file,
             )
-        print("-" * 76)
-        print(f"  Authored HCL    : {final_state.get('authored_hcl_path')}")
-        print(f"  Terraform Vars  : {final_state.get('tfvars_path')}")
-        print(f"  JSON Audit      : {final_state.get('report_json_path')}")
-        print(f"  Markdown Audit  : {final_state.get('report_md_path')}")
-        print("=" * 76)
+        finally:
+            term_obs.stop()
+
+        if args.json:
+            summary = {
+                "run_id": final_state.get("run_id"),
+                "status": final_state.get("status"),
+                "engine": supervisor.engine_name,
+                "execution_mode": execution_mode,
+                "enable_aws": bool((final_state.get("tfvars_data") or {}).get("enable_aws", False)),
+                "guard_approved": final_state.get("guard_approved", False),
+                "retry_count": final_state.get("retry_count", 0),
+                "deploy_succeeded": final_state.get("deploy_succeeded", False),
+                "audit_passed": final_state.get("audit_passed", False),
+                "remediations_applied": len(final_state.get("remediations_applied", [])),
+                "report_json_path": final_state.get("report_json_path"),
+                "report_md_path": final_state.get("report_md_path"),
+                "state_timeline_path": final_state.get("state_timeline_path"),
+                "telemetry_overhead_ms": final_state.get("telemetry_overhead_ms", 0.0),
+            }
+            print(json.dumps(summary, indent=2))
+        else:
+            print("=" * 76)
+            print("🤖 QUOTA PAY — PROXMOX-FIRST 4-AGENT AUTONOMOUS TERRAFORM PIPELINE")
+            print(f"   Run ID          : {final_state.get('run_id')}")
+            print(f"   Engine          : {supervisor.engine_name}")
+            print(f"   Execution Mode  : {execution_mode.upper()}")
+            print(f"   AWS Opt-In      : {bool((final_state.get('tfvars_data') or {}).get('enable_aws', False))}")
+            print(f"   Final Status    : {final_state.get('status')}")
+            print(f"   Event Overhead  : {final_state.get('telemetry_overhead_ms', 0.0):.3f}ms")
+            print("=" * 76)
+            for entry in final_state.get("agent_logs", []):
+                print(
+                    f"  [{entry.get('agent')}] ({entry.get('phase')} -> {entry.get('status')}): "
+                    f"{entry.get('reasoning')}"
+                )
+            print("-" * 76)
+            print(f"  Authored HCL    : {final_state.get('authored_hcl_path')}")
+            print(f"  Terraform Vars  : {final_state.get('tfvars_path')}")
+            print(f"  JSON Audit      : {final_state.get('report_json_path')}")
+            print(f"  Markdown Audit  : {final_state.get('report_md_path')}")
+            print(f"  State Timeline  : {final_state.get('state_timeline_path')}")
+            print("=" * 76)
+
+        if ui_server is not None and args.ui_keep_open:
+            target_stream = sys.stderr if args.json else sys.stdout
+            print(
+                f"Dashboard kept open at {ui_url} (--ui-keep-open). Press Ctrl+C to exit.",
+                file=target_stream,
+                flush=True,
+            )
+            try:
+                import time
+
+                while True:
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                pass
+    finally:
+        if ui_server is not None:
+            ui_server.stop()
 
     ok = final_state.get("status") in ("completed", "deployed")
     return 0 if ok else 1

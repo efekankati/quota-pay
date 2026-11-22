@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
+import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -32,7 +34,10 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.agents import (
     LANGGRAPH_AVAILABLE,
+    AgentEvent,
+    AgentEventBus,
     AgentPipelineConfig,
+    LiveSSEServerObserver,
     MultiAgentSupervisor,
     evaluate_pre_deploy_rubric,
 )
@@ -417,6 +422,128 @@ def test_5_optional_aws_opt_in_preserved() -> None:
         )
 
 
+def test_6_realtime_telemetry_jsonl_and_sse() -> None:
+    _banner("TEST 6: Real-Time Observability Bus, JSONL Timeline, SSE UI & Non-TTY JSON")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_reports = Path(tmp_dir)
+        captured_events: list[AgentEvent] = []
+
+        # 6A. Event callback & JSONL timeline during retry loop (QEMU -> LXC)
+        bus = AgentEventBus()
+        ui_obs = LiveSSEServerObserver(port=0, prompt="QEMU retry telemetry check")
+        ui_url = ui_obs.start()
+        try:
+            bus.subscribe(captured_events.append)
+            bus.subscribe(ui_obs.on_state_change)
+
+            cfg = AgentPipelineConfig(
+                project_root=REPO_ROOT,
+                report_dir=tmp_reports,
+                execution_mode="dry-run",
+                enable_aws=False,
+                nested_vtx_available=False,
+                max_retries=3,
+            )
+            supervisor = MultiAgentSupervisor(
+                config=cfg,
+                telemetry_override=_offline_telemetry(),
+                event_bus=bus,
+            )
+            state = supervisor.run(
+                prompt="Deploy Quota Pay as a QEMU full vm on Proxmox node pve with 2 cores and 1024MB RAM"
+            )
+            assert state["status"] == "completed"
+
+            agents_seen = {e.agent_id for e in captured_events}
+            for req_agent in (
+                "pipeline",
+                "figaro_cli_bridge",
+                "terraform_author_agent",
+                "prompt_guard_agent",
+                "deploy_runner_agent",
+                "post_deploy_auditor_agent",
+                "report_writer",
+            ):
+                assert req_agent in agents_seen, f"Missing events from {req_agent}; got {agents_seen}"
+            assert any(e.status == "RETRYING" for e in captured_events), "Expected RETRYING event on QEMU->LXC fallback"
+
+            timeline_path = Path(state["state_timeline_path"])
+            report_md_path = Path(state["report_md_path"])
+            assert timeline_path.exists()
+            assert timeline_path.stem.replace("state_timeline_", "") == report_md_path.stem.replace("deployment_audit_", "")
+
+            jsonl_lines = [ln for ln in timeline_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            assert len(jsonl_lines) >= 10
+            parsed_events = [AgentEvent.model_validate_json(ln) for ln in jsonl_lines]
+            assert parsed_events[-1].agent_id in ("pipeline", "report_writer")
+            assert bus.overhead_ms < 50.0, f"Expected near-zero dispatch overhead, got {bus.overhead_ms:.2f}ms"
+
+            # 6B. Verify SSE server HTTP endpoints (HTML, /api/state JSON, and live /events stream)
+            with urllib.request.urlopen(f"{ui_url}/", timeout=3.0) as html_resp:
+                assert html_resp.status == 200
+                html_text = html_resp.read().decode("utf-8")
+                assert "EventSource('/events?offset='" in html_text
+
+            with urllib.request.urlopen(f"{ui_url}/api/state", timeout=3.0) as api_resp:
+                assert api_resp.status == 200
+                api_json = json.loads(api_resp.read().decode("utf-8"))
+                assert api_json["snapshot"]["status"] == "PASSED"
+                assert len(api_json["events"]) == len(captured_events)
+
+            with urllib.request.urlopen(f"{ui_url}/events?offset=0", timeout=3.0) as sse_resp:
+                assert sse_resp.status == 200
+                first_chunk = sse_resp.readline().decode("utf-8")
+                assert first_chunk.startswith("data: "), f"Unexpected SSE frame: {first_chunk!r}"
+        finally:
+            ui_obs.stop()
+
+        print(f"  ✅ Callback & JSONL timeline verified ({len(captured_events)} events, overhead={bus.overhead_ms:.3f}ms)!")
+        print("  ✅ Live SSE dashboard HTML, /api/state, /events replay & clean shutdown verified!")
+
+        # 6C. Verify CLI --dry-run --json emits strictly parseable stdout JSON
+        cli_json_proc = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "run_agent_pipeline.py"),
+                "--dry-run",
+                "--json",
+                "--report-dir",
+                str(tmp_reports / "cli_json"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert cli_json_proc.returncode == 0, f"--dry-run --json failed: {cli_json_proc.stderr}"
+        cli_summary = json.loads(cli_json_proc.stdout)
+        assert cli_summary["status"] == "completed"
+        assert Path(cli_summary["state_timeline_path"]).exists()
+        print("  ✅ CLI `--dry-run --json` emits pure JSON stdout cleanly!")
+
+        # 6D. Verify CLI --dry-run --ui --ui-port 0 starts and terminates cleanly
+        cli_ui_proc = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "run_agent_pipeline.py"),
+                "--dry-run",
+                "--ui",
+                "--ui-port",
+                "0",
+                "--report-dir",
+                str(tmp_reports / "cli_ui"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert cli_ui_proc.returncode == 0, f"--dry-run --ui failed: {cli_ui_proc.stderr}"
+        assert "Live Agent Dashboard: http://127.0.0.1:" in cli_ui_proc.stdout
+        print("  ✅ CLI `--dry-run --ui` started SSE server and exited cleanly!")
+
+
 def main() -> None:
     print("=" * 74)
     print("🚀 RUNNING PROXMOX-FIRST 4-AGENT PIPELINE & FIGARO CLI TEST SUITE")
@@ -427,6 +554,7 @@ def main() -> None:
         test_3_agent2_rejection_and_self_correction_loop()
         test_4_agent4_post_deploy_security_and_perf_remediation()
         test_5_optional_aws_opt_in_preserved()
+        test_6_realtime_telemetry_jsonl_and_sse()
         print("\n" + "=" * 74)
         print("🎉 ALL 4-AGENT PIPELINE & FIGARO CLI BRIDGE TESTS PASSED!")
         print("=" * 74)

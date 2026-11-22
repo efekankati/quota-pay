@@ -14,6 +14,7 @@ state-machine fallback so execution never fails in minimal environments.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,7 @@ from .deploy_runner_agent import DeployRunnerAgent
 from .post_deploy_auditor_agent import PostDeployAuditorAgent
 from .prompt_guard_agent import PromptGuardAgent
 from .state import AgentLogEntry, AgentPipelineConfig, AgentState
+from .telemetry import AgentEventBus, EventCallback, JsonlTimelineObserver
 from .terraform_author_agent import TerraformAuthorAgent
 
 try:
@@ -45,14 +47,31 @@ class MultiAgentSupervisor:
         self,
         config: Optional[AgentPipelineConfig] = None,
         telemetry_override: Optional[ClusterTelemetrySnapshot] = None,
+        event_bus: Optional[AgentEventBus] = None,
+        on_state_change: Optional[EventCallback] = None,
     ) -> None:
         self.config = config or AgentPipelineConfig()
         self.telemetry_override = telemetry_override
+        self.event_bus = event_bus or AgentEventBus()
+        if on_state_change is not None:
+            self.event_bus.subscribe(on_state_change)
         self.figaro_bridge = FigaroCLIBridge(project_root=self.config.project_root)
-        self.agent_1 = TerraformAuthorAgent(self.config)
-        self.agent_2 = PromptGuardAgent(self.config)
-        self.agent_3 = DeployRunnerAgent(self.config)
-        self.agent_4 = PostDeployAuditorAgent(self.config)
+        self.agent_1 = TerraformAuthorAgent(
+            self.config,
+            emit=self.event_bus.make_agent_emitter(TerraformAuthorAgent.NAME),
+        )
+        self.agent_2 = PromptGuardAgent(
+            self.config,
+            emit=self.event_bus.make_agent_emitter(PromptGuardAgent.NAME),
+        )
+        self.agent_3 = DeployRunnerAgent(
+            self.config,
+            emit=self.event_bus.make_agent_emitter(DeployRunnerAgent.NAME),
+        )
+        self.agent_4 = PostDeployAuditorAgent(
+            self.config,
+            emit=self.event_bus.make_agent_emitter(PostDeployAuditorAgent.NAME),
+        )
         self._graph = self._compile_langgraph() if LANGGRAPH_AVAILABLE else None
 
     @property
@@ -62,6 +81,9 @@ class MultiAgentSupervisor:
     # --- Graph Node Handlers ---
 
     def _node_figaro_ingest(self, state: AgentState) -> AgentState:
+        started = time.perf_counter()
+        emit = self.event_bus.make_agent_emitter("figaro_cli_bridge")
+        emit("RUNNING", "resolving FIGARO CLI directive")
         logs = list(state.get("agent_logs") or [])
         figaro_file = Path(state["figaro_file"]) if state.get("figaro_file") else None
         directive = self.figaro_bridge.resolve_directive(
@@ -90,6 +112,17 @@ class MultiAgentSupervisor:
                     "fallback_reason": directive.cli_execution.fallback_reason,
                 },
             ).model_dump()
+        )
+        emit(
+            "PASSED",
+            "directive resolved",
+            detail=f"source={directive.source}, scenario={directive.scenario}, nodes={list(directive.placement_plan.nodes.keys())}",
+            duration_ms=round((time.perf_counter() - started) * 1000.0, 2),
+            metadata={
+                "source": directive.source,
+                "scenario": directive.scenario,
+                "nodes": list(directive.placement_plan.nodes.keys()),
+            },
         )
         return {
             **state,
@@ -123,16 +156,21 @@ class MultiAgentSupervisor:
         return "finalize_report"
 
     def _node_finalize_report(self, state: AgentState) -> AgentState:
+        started = time.perf_counter()
+        emit = self.event_bus.make_agent_emitter("report_writer")
+        emit("RUNNING", "writing audit JSON, Markdown & state timeline")
         report_dir = self.config.resolved_report_dir()
         report_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = state.get("run_timestamp") or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         json_path = report_dir / f"deployment_audit_{ts}.json"
         md_path = report_dir / f"deployment_audit_{ts}.md"
+        overhead_ms = round(self.event_bus.overhead_ms, 3)
 
         final_state: Dict[str, Any] = {
             **state,
             "report_json_path": str(json_path),
             "report_md_path": str(md_path),
+            "telemetry_overhead_ms": overhead_ms,
         }
 
         # Scrub any accidental secret values before serializing report
@@ -148,6 +186,8 @@ class MultiAgentSupervisor:
             "prompt": final_state.get("prompt"),
             "retry_count": final_state.get("retry_count", 0),
             "max_retries": final_state.get("max_retries", self.config.max_retries),
+            "state_timeline_path": final_state.get("state_timeline_path"),
+            "telemetry_overhead_ms": overhead_ms,
             "figaro_cli_execution": final_state.get("figaro_cli_execution", {}),
             "directive": final_state.get("directive", {}),
             "authored_artifacts": {
@@ -179,6 +219,13 @@ class MultiAgentSupervisor:
 
         json_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
         md_path.write_text(self._render_markdown_report(report_payload), encoding="utf-8")
+        emit(
+            "PASSED",
+            "audit artifacts written",
+            detail=f"{md_path.name}",
+            duration_ms=round((time.perf_counter() - started) * 1000.0, 2),
+            metadata={"report_md_path": str(md_path), "report_json_path": str(json_path)},
+        )
         return final_state  # type: ignore[return-value]
 
     @staticmethod
@@ -221,6 +268,7 @@ class MultiAgentSupervisor:
 - **AWS Opt-In Enabled:** `{data.get('enable_aws')}`
 - **Agent 2 Retry Count:** `{data.get('retry_count')}/{data.get('max_retries')}`
 - **Completed At:** `{data.get('completed_at')}`
+- **State Timeline:** `{data.get('state_timeline_path') or 'N/A'}` (**Telemetry Overhead:** `{float(data.get('telemetry_overhead_ms', 0.0)):.3f}ms`)
 
 ---
 
@@ -333,8 +381,18 @@ class MultiAgentSupervisor:
         initial_runtime_telemetry: Optional[Dict[str, Any]] = None,
     ) -> AgentState:
         """Executes the full 4-agent pipeline and returns the final audited AgentState."""
+        run_id = f"run-{uuid.uuid4().hex[:10]}"
+        run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.event_bus.run_id = run_id
+        timeline_path = self.config.resolved_report_dir() / f"state_timeline_{run_ts}.jsonl"
+        jsonl_obs = JsonlTimelineObserver(timeline_path)
+        self.event_bus.subscribe(jsonl_obs.on_state_change)
+        pipeline_emit = self.event_bus.make_agent_emitter("pipeline")
+        pipeline_started = time.perf_counter()
+
         initial_state: AgentState = {
-            "run_id": f"run-{uuid.uuid4().hex[:10]}",
+            "run_id": run_id,
+            "run_timestamp": run_ts,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "prompt": prompt,
             "figaro_cmd": figaro_cmd,
@@ -346,11 +404,42 @@ class MultiAgentSupervisor:
             "policy_feedback": [],
             "policy_history": [],
             "agent_logs": [],
+            "state_timeline_path": str(timeline_path),
             "status": "running",
         }
         if initial_runtime_telemetry:
             initial_state["observed_runtime_telemetry"] = dict(initial_runtime_telemetry)
 
-        if self._graph is not None:
-            return self._graph.invoke(initial_state)
-        return self._run_python_state_machine(initial_state)
+        try:
+            pipeline_emit(
+                "RUNNING",
+                "starting 4-agent pipeline",
+                detail=f"mode={self.config.execution_mode}, enable_aws={self.config.enable_aws}",
+                metadata={
+                    "engine": self.engine_name,
+                    "execution_mode": self.config.execution_mode,
+                    "enable_aws": self.config.enable_aws,
+                },
+            )
+            if self._graph is not None:
+                result = self._graph.invoke(initial_state)
+            else:
+                result = self._run_python_state_machine(initial_state)
+
+            final_ok = result.get("status") in ("completed", "deployed")
+            pipeline_emit(
+                "PASSED" if final_ok else "FAILED",
+                "pipeline finished",
+                detail=f"status={result.get('status')}",
+                duration_ms=round((time.perf_counter() - pipeline_started) * 1000.0, 2),
+                retry_count=int(result.get("retry_count", 0)),
+                metadata={
+                    "final_status": result.get("status"),
+                    "overhead_ms": round(self.event_bus.overhead_ms, 3),
+                },
+            )
+            result["telemetry_overhead_ms"] = round(self.event_bus.overhead_ms, 3)
+            return result
+        finally:
+            self.event_bus.unsubscribe(jsonl_obs.on_state_change)
+            jsonl_obs.close()

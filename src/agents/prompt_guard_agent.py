@@ -13,8 +13,9 @@ back to Agent 1 for self-correction (`max_retries = 3`).
 from __future__ import annotations
 
 import socket
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from src.orchestrator.actuator import TerraformActuator
 
@@ -26,6 +27,7 @@ from .state import (
     PlanDiffSummary,
     PolicyViolation,
 )
+from .telemetry import noop_emit
 
 
 def _is_tcp_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -128,8 +130,13 @@ class PromptGuardAgent:
 
     NAME = "prompt_guard_agent"
 
-    def __init__(self, config: AgentPipelineConfig) -> None:
+    def __init__(
+        self,
+        config: AgentPipelineConfig,
+        emit: Optional[Callable[..., Any]] = None,
+    ) -> None:
         self.config = config
+        self.emit = emit or noop_emit
         self.actuator = TerraformActuator(project_root=config.project_root)
         self.actuator.infra_dir = config.resolved_infra_dir()
         self.actuator.docker_dir = config.resolved_docker_dir()
@@ -151,6 +158,7 @@ class PromptGuardAgent:
 
     def run(self, state: AgentState) -> AgentState:
         """Audits authored HCL + tfvars + terraform validate/plan before deployment."""
+        started = time.perf_counter()
         directive = state.get("directive") or {}
         tfvars_data = state.get("tfvars_data") or {}
         retry_count = int(state.get("retry_count", 0))
@@ -159,10 +167,12 @@ class PromptGuardAgent:
         policy_history = list(state.get("policy_history") or [])
 
         # 1. Always run real `terraform validate`
+        self.emit("RUNNING", "running terraform validate", retry_count=retry_count)
         val_res = self.actuator.validate()
         validate_ok = bool(val_res.get("success", False))
 
         # 2. Attempt live `terraform plan -out + show -json` if live mode & Proxmox API reachable
+        self.emit("RUNNING", "evaluating terraform plan diff & policy rubrics", retry_count=retry_count)
         plan_json: Optional[Dict[str, Any]] = None
         plan_diff: PlanDiffSummary
         if (
@@ -255,6 +265,35 @@ class PromptGuardAgent:
                 },
             ).model_dump()
         )
+
+        duration_ms = round((time.perf_counter() - started) * 1000.0, 2)
+        if approved:
+            self.emit(
+                "PASSED",
+                "pre-deployment policy approved",
+                detail=(
+                    f"{len(plan_diff.proxmox_resources_planned)} Proxmox, "
+                    f"{len(plan_diff.aws_resources_planned)} AWS planned"
+                ),
+                duration_ms=duration_ms,
+                retry_count=next_retry,
+            )
+        elif next_retry <= max_retries:
+            self.emit(
+                "RETRYING",
+                "policy rejected; routing diff to Agent 1",
+                detail=", ".join(sorted({v.code for v in errors})),
+                duration_ms=duration_ms,
+                retry_count=next_retry,
+            )
+        else:
+            self.emit(
+                "FAILED",
+                "policy blocked after max retries",
+                detail=", ".join(sorted({v.code for v in errors})),
+                duration_ms=duration_ms,
+                retry_count=next_retry,
+            )
 
         return {
             **state,

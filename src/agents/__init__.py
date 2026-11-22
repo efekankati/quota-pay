@@ -17,12 +17,34 @@ from .state import (
     RemediationAction,
 )
 from .supervisor import LANGGRAPH_AVAILABLE, MultiAgentSupervisor
+from .telemetry import (
+    RICH_AVAILABLE,
+    AgentEvent,
+    AgentEventBus,
+    AgentStatus,
+    EventCallback,
+    JsonlTimelineObserver,
+    LiveSSEServerObserver,
+    PlainTextObserver,
+    RichLiveObserver,
+    build_terminal_observer,
+)
 from .terraform_author_agent import TerraformAuthorAgent
 
 __all__ = [
     "AgentPipelineConfig",
     "AgentState",
     "AgentLogEntry",
+    "AgentEvent",
+    "AgentEventBus",
+    "AgentStatus",
+    "EventCallback",
+    "JsonlTimelineObserver",
+    "PlainTextObserver",
+    "RichLiveObserver",
+    "LiveSSEServerObserver",
+    "build_terminal_observer",
+    "RICH_AVAILABLE",
     "PolicyViolation",
     "PlanDiffSummary",
     "FunctionalCheckResult",

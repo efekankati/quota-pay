@@ -17,7 +17,7 @@ import socket
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from src.orchestrator.actuator import TerraformActuator
 
@@ -27,6 +27,7 @@ from .state import (
     AgentState,
     FunctionalCheckResult,
 )
+from .telemetry import noop_emit
 
 
 def _http_probe(url: str, expected_substr: Optional[str] = None, timeout: float = 4.0) -> FunctionalCheckResult:
@@ -86,8 +87,13 @@ class DeployRunnerAgent:
 
     NAME = "deploy_runner_agent"
 
-    def __init__(self, config: AgentPipelineConfig) -> None:
+    def __init__(
+        self,
+        config: AgentPipelineConfig,
+        emit: Optional[Callable[..., Any]] = None,
+    ) -> None:
         self.config = config
+        self.emit = emit or noop_emit
         self.actuator = TerraformActuator(project_root=config.project_root)
         self.actuator.infra_dir = config.resolved_infra_dir()
         self.actuator.docker_dir = config.resolved_docker_dir()
@@ -97,8 +103,10 @@ class DeployRunnerAgent:
         directive: Dict[str, Any],
         tfvars_data: Dict[str, Any],
     ) -> tuple[bool, str, Dict[str, str], List[FunctionalCheckResult], Dict[str, Any]]:
+        self.emit("RUNNING", "running terraform validate (dry-run)")
         val_res = self.actuator.validate()
         ok = bool(val_res.get("success", False))
+        self.emit("RUNNING", "verifying dry-run functional probes (/healthz, /ingress-health, /api/health, /)")
         edge_ip = self.config.edge_ip
         cloud_ip = self.config.cloud_ip
         live_ips = {"edge_ip": edge_ip, "cloud_ip": cloud_ip}
@@ -178,10 +186,12 @@ class DeployRunnerAgent:
         checks: List[FunctionalCheckResult] = []
 
         # 1. terraform init + validate + plan + apply
+        self.emit("RUNNING", "running terraform init")
         init_res = self.actuator.init()
         if not init_res["success"]:
             return False, f"terraform init failed: {init_res['stderr']}", {}, checks, {"mode": "live"}
 
+        self.emit("RUNNING", "running terraform validate")
         val_res = self.actuator.validate()
         if not val_res["success"]:
             return False, f"terraform validate failed: {val_res['stderr']}", {}, checks, {"mode": "live"}
@@ -201,10 +211,12 @@ class DeployRunnerAgent:
             apply_var_file = temp_apply_path.name
 
         try:
+            self.emit("RUNNING", "running terraform plan")
             plan_res = self.actuator.plan(var_file=apply_var_file)
             if not plan_res["success"]:
                 return False, f"terraform plan failed: {plan_res['stderr']}", {}, checks, {"mode": "live"}
 
+            self.emit("RUNNING", "running terraform apply -auto-approve")
             apply_res = self.actuator.apply(var_file=apply_var_file, auto_approve=True)
             if not apply_res["success"]:
                 return False, f"terraform apply failed: {apply_res['stderr']}", {}, checks, {"mode": "live"}
@@ -223,6 +235,7 @@ class DeployRunnerAgent:
             edge_ip=live_ips["edge_ip"],
             cloud_ip=live_ips["cloud_ip"],
         )
+        self.emit("RUNNING", f"pct start {self.config.edge_container_id} & syncing Caddy upstreams")
         self.actuator.sync_edge_upstreams(
             pve_host=self.config.proxmox_host,
             container_id=self.config.edge_container_id,
@@ -231,9 +244,11 @@ class DeployRunnerAgent:
 
         # 3. Wait for HTTP/SSH readiness on target host
         target_host = live_ips["cloud_ip"] if scenario == "cloud_burst" else live_ips["edge_ip"]
+        self.emit("RUNNING", f"waiting for HTTP readiness on {target_host}:80")
         _wait_for_tcp_port(target_host, 80, timeout_sec=30, interval_sec=2.0)
 
         # 4. Run end-to-end functional HTTP verification probes
+        self.emit("RUNNING", "probing /healthz, /ingress-health, /api/health & /")
         checks = [
             _http_probe(f"http://{target_host}/healthz", expected_substr="ok"),
             _http_probe(f"http://{target_host}/ingress-health", expected_substr="quota-ingress OK"),
@@ -268,6 +283,7 @@ class DeployRunnerAgent:
 
     def run(self, state: AgentState) -> AgentState:
         """Executes deployment and functional verification."""
+        started = time.perf_counter()
         directive = state.get("directive") or {}
         tfvars_data = state.get("tfvars_data") or {}
         logs = list(state.get("agent_logs") or [])
@@ -305,6 +321,18 @@ class DeployRunnerAgent:
                     "checks_total": len(checks),
                 },
             ).model_dump()
+        )
+
+        self.emit(
+            "PASSED" if succeeded else "FAILED",
+            f"deploy & verify ({self.config.execution_mode})",
+            detail=f"{passed_count}/{len(checks)} checks passed (edge={live_ips.get('edge_ip')}, latency={telemetry.get('http_latency_ms')}ms)",
+            duration_ms=round((time.perf_counter() - started) * 1000.0, 2),
+            metadata={
+                "checks_passed": passed_count,
+                "checks_total": len(checks),
+                "live_ips": live_ips,
+            },
         )
 
         return {
