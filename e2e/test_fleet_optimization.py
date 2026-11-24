@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.android_emulator_fleet import (  # noqa: E402
     ALL_PHONE_SLOTS,
+    DEFAULT_DNS_SERVERS,
     GUEST_HEAP_MB,
     GUEST_SYSIMAGE_REL,
     ORGANIZER_HEAP_MB,
@@ -240,6 +241,8 @@ class FleetOptimizationTests(unittest.TestCase):
                 self.assertIn("-no-snapshot-save", org_cmd)
                 self.assertNotIn("-no-window", org_cmd)
                 self.assertEqual(org_cmd[org_cmd.index("-gpu") + 1], "swiftshader_indirect")
+                self.assertIn("-dns-server", org_cmd)
+                self.assertEqual(org_cmd[org_cmd.index("-dns-server") + 1], DEFAULT_DNS_SERVERS)
 
                 fleet._launch_single_emulator(ALL_PHONE_SLOTS[1], snapshot_mode="load")
                 guest_cmd = m_popen.call_args_list[1].args[0]
@@ -247,6 +250,8 @@ class FleetOptimizationTests(unittest.TestCase):
                 self.assertIn("-no-window", guest_cmd)
                 self.assertEqual(guest_cmd[guest_cmd.index("-memory") + 1], "1024")
                 self.assertEqual(guest_cmd[guest_cmd.index("-gpu") + 1], "swiftshader_indirect")
+                self.assertIn("-dns-server", guest_cmd)
+                self.assertEqual(guest_cmd[guest_cmd.index("-dns-server") + 1], DEFAULT_DNS_SERVERS)
 
     def test_visible_guests_use_default_image_and_preserve_headless_snapshots(self) -> None:
         visible_slots = build_phone_slots(3, headless_guests=False)
@@ -321,6 +326,47 @@ class FleetOptimizationTests(unittest.TestCase):
                     quiet_stdout=True,
                 )
                 self.assertEqual(vis_fleet.guest_ram_mb, VISIBLE_GUEST_RAM_MB)
+
+    def test_ensure_guest_network_recovers_stale_snapshot_wifi(self) -> None:
+        sdk = Path("C:/fake_sdk")
+        slot = ALL_PHONE_SLOTS[0]
+        with mock.patch("scripts.android_emulator_fleet.resolve_android_sdk", return_value=sdk), mock.patch(
+            "scripts.android_emulator_fleet.resolve_adb_exe", return_value=sdk / "platform-tools" / "adb.exe"
+        ), mock.patch(
+            "scripts.android_emulator_fleet.resolve_emulator_exe", return_value=sdk / "emulator" / "emulator.exe"
+        ):
+            fleet = AndroidEmulatorFleet(PROJECT_ROOT, slots=[slot], quiet_stdout=True)
+
+            # Case A: DNS is already healthy -> single probe, no Wi-Fi toggle
+            with mock.patch(
+                "scripts.android_emulator_fleet.run_cmd",
+                return_value=mock.Mock(
+                    returncode=0,
+                    stdout="PING supabase.co (104.18.38.10) 56(84) bytes of data.\n",
+                    stderr="",
+                ),
+            ) as m_run:
+                self.assertTrue(fleet._ensure_guest_network(slot))
+                self.assertEqual(m_run.call_count, 1)
+
+            # Case B: stale snapshot DNS/route -> disables & re-enables Wi-Fi, then resolves
+            with mock.patch(
+                "scripts.android_emulator_fleet.run_cmd",
+                side_effect=[
+                    mock.Mock(returncode=2, stdout="", stderr="ping: unknown host supabase.co\n"),
+                    mock.Mock(returncode=0, stdout="", stderr=""),
+                    mock.Mock(returncode=0, stdout="", stderr=""),
+                    mock.Mock(
+                        returncode=0,
+                        stdout="PING supabase.co (172.64.149.246) 56(84) bytes of data.\n",
+                        stderr="",
+                    ),
+                ],
+            ) as m_run, mock.patch("scripts.android_emulator_fleet.time.sleep"):
+                self.assertTrue(fleet._ensure_guest_network(slot, timeout_s=10.0))
+                cmds = [call.args[0] for call in m_run.call_args_list]
+                self.assertTrue(any(c[-3:] == ["svc", "wifi", "disable"] for c in cmds))
+                self.assertTrue(any(c[-3:] == ["svc", "wifi", "enable"] for c in cmds))
 
 
 if __name__ == "__main__":

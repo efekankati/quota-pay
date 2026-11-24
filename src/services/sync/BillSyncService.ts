@@ -453,12 +453,15 @@ class BillSyncServiceImpl {
     }
 
     try {
-      const { data: initialRows } = await supabase
+      const { data: initialRows, error: initialSelectError } = await supabase
         .from('bills')
         .select('id, title')
         .ilike('title', `%${bill.id}%`)
         .order('created_at', { ascending: false })
         .limit(1);
+      if (initialSelectError) {
+        console.warn('[BillSync] Initial select error:', initialSelectError);
+      }
 
       let rowId: string | number | null =
         initialRows && initialRows.length > 0 ? initialRows[0].id : null;
@@ -540,7 +543,7 @@ class BillSyncServiceImpl {
           }
         } else {
           this.recordWrittenPayload(bill.id, payloadStr);
-          const { data: inserted } = await supabase
+          const { data: inserted, error: insertError } = await supabase
             .from('bills')
             .insert({
               title: payloadStr,
@@ -550,6 +553,9 @@ class BillSyncServiceImpl {
             })
             .select('id')
             .limit(1);
+          if (insertError) {
+            console.warn('[BillSync] Insert bill error:', insertError);
+          }
           if (inserted && inserted.length > 0) {
             rowId = inserted[0].id;
           }
@@ -630,7 +636,12 @@ class BillSyncServiceImpl {
         });
 
         if (splitsRows.length > 0) {
-          await supabase.from('bill_splits').upsert(splitsRows, { onConflict: 'id' });
+          const { error: splitsError } = await supabase
+            .from('bill_splits')
+            .upsert(splitsRows, { onConflict: 'id' });
+          if (splitsError) {
+            console.warn('[BillSync] bill_splits upsert error:', splitsError);
+          }
         }
       } catch (errSplits) {
         console.warn('[BillSync] bill_splits upsert notice:', errSplits);
@@ -649,7 +660,12 @@ class BillSyncServiceImpl {
             is_coperto: Boolean(it.isCoperto),
             assigned_participant_ids: it.assignedParticipantIds || [],
           }));
-          await supabase.from('bill_items').upsert(itemsRows, { onConflict: 'id' });
+          const { error: itemsError } = await supabase
+            .from('bill_items')
+            .upsert(itemsRows, { onConflict: 'id' });
+          if (itemsError) {
+            console.warn('[BillSync] bill_items upsert error:', itemsError);
+          }
         } catch (errItems) {
           console.warn('[BillSync] bill_items upsert notice:', errItems);
         }

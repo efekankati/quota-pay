@@ -48,6 +48,7 @@ VISIBLE_GUEST_RAM_MB = 1536
 GUEST_HEAP_MB = 192
 GUEST_CORES = 2
 DEFAULT_BOOT_BATCH_SIZE = 2
+DEFAULT_DNS_SERVERS = "8.8.8.8,1.1.1.1"
 
 
 @dataclass(frozen=True)
@@ -1070,6 +1071,8 @@ class AndroidEmulatorFleet:
             "none",
             "-netspeed",
             "full",
+            "-dns-server",
+            DEFAULT_DNS_SERVERS,
         ]
         if slot_ram < 2048:
             cmd.append("-lowram")
@@ -1140,6 +1143,66 @@ class AndroidEmulatorFleet:
             time.sleep(2.0)
         raise TimeoutError(f"Timed out waiting for {slot.serial} to complete boot (last_adb_state={last_state!r})")
 
+    def _probe_guest_dns(self, slot: PhoneSlot, probe_host: str = "supabase.co") -> Optional[str]:
+        """Probe guest DNS resolution and external routing using a single ICMP packet."""
+        proc = run_cmd(
+            [str(self.adb_exe), "-s", slot.serial, "shell", "ping", "-c", "1", "-W", "1", probe_host],
+            timeout=6,
+            check=False,
+        )
+        combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        lower = combined.lower()
+        if "unknown host" in lower or "unreachable" in lower:
+            return None
+        match = re.search(r"PING\s+\S+\s+\(([^)]+)\)", combined)
+        return match.group(1) if match else None
+
+    def _ensure_guest_network(
+        self,
+        slot: PhoneSlot,
+        probe_host: str = "supabase.co",
+        timeout_s: float = 15.0,
+    ) -> bool:
+        """Refresh guest Wi-Fi (and cellular fallback) when snapshot restore leaves stale DNS/routes."""
+        ip = self._probe_guest_dns(slot, probe_host)
+        if ip:
+            return True
+
+        self._log(
+            slot.serial,
+            "network_refresh",
+            f"DNS/route probe failed for {probe_host}; cycling guest Wi-Fi",
+        )
+        run_cmd([str(self.adb_exe), "-s", slot.serial, "shell", "svc", "wifi", "disable"], timeout=10, check=False)
+        time.sleep(0.8)
+        run_cmd([str(self.adb_exe), "-s", slot.serial, "shell", "svc", "wifi", "enable"], timeout=10, check=False)
+
+        start = time.time()
+        deadline = start + timeout_s
+        cycled_data = False
+        while time.time() < deadline:
+            time.sleep(1.2)
+            ip = self._probe_guest_dns(slot, probe_host)
+            if ip:
+                self._log(
+                    slot.serial,
+                    "network_ready",
+                    f"DNS resolved {probe_host} -> {ip} after Wi-Fi refresh",
+                )
+                return True
+            if not cycled_data and (time.time() - start) >= 6.0:
+                cycled_data = True
+                run_cmd([str(self.adb_exe), "-s", slot.serial, "shell", "svc", "data", "disable"], timeout=10, check=False)
+                time.sleep(0.5)
+                run_cmd([str(self.adb_exe), "-s", slot.serial, "shell", "svc", "data", "enable"], timeout=10, check=False)
+
+        self._log(
+            slot.serial,
+            "network_warning",
+            f"Guest DNS/route still unavailable for {probe_host} after {timeout_s:.0f}s refresh",
+        )
+        return False
+
     def _configure_booted_device(self, slot: PhoneSlot) -> None:
         for setting in (
             "settings put global window_animation_scale 0.0",
@@ -1159,6 +1222,7 @@ class AndroidEmulatorFleet:
             timeout=15,
             check=True,
         )
+        self._ensure_guest_network(slot)
 
     def _configure_app_debug_host(self, slot: PhoneSlot) -> None:
         run_cmd(
