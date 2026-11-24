@@ -18,6 +18,13 @@ UI_PORT=""
 UI_KEEP_OPEN=0
 NO_TUI=0
 JSON_MODE=0
+GUEST_RAM_MB=""
+BOOT_BATCH_SIZE=""
+PREPARE_SNAPSHOTS=0
+NO_SNAPSHOT=0
+KEEP_ALIVE=0
+REUSE_RUNNING=0
+GUEST_GPU=""
 
 print_usage() {
   cat <<'EOF'
@@ -34,6 +41,13 @@ Options:
       --headless-guests   Run guests headless with Organizer window visible (default; 1-9 guests)
       --show-all-windows  Show all emulator windows (alias: --all-windows; 1-3 guests)
       --all-windows       Alias for --show-all-windows
+      --guest-ram-mb <MB> Guest RAM override in MB (512-4096; default: 1024)
+      --boot-batch-size <N> Concurrent emulators to boot per batch (1-10; default: 2)
+      --prepare-snapshots Boot AVDs, install APK cleanly, save 'clean_ready' snapshots, and exit
+      --no-snapshot       Bypass 'clean_ready' snapshots and force cold boot
+      --keep-alive        Keep booted emulators alive after E2E completion for warm reuse
+      --reuse-running     Skip booting already-ready AVDs and reset app via 'pm clear'
+      --guest-gpu <MODE>  Headless guest GPU mode: auto | swiftshader_indirect | off
       --seed <INT>        Deterministic random seed passed to the E2E runner
       --apk <PATH>        APK path (default: android/app/build/outputs/apk/debug/app-debug.apk)
       --keep-alive-on-fail Keep emulators running if E2E fails
@@ -45,6 +59,7 @@ Options:
   -h, --help              Show this help and exit
 
 Examples:
+  scripts/run_android_e2e.sh --guests 3 --headless-guests --prepare-snapshots
   scripts/run_android_e2e.sh --guests 3 --show-all-windows --ui
   scripts/run_android_e2e.sh --guests 9 --headless-guests
 EOF
@@ -164,6 +179,69 @@ while [[ $# -gt 0 ]]; do
       JSON_MODE=1
       shift
       ;;
+    --guest-ram-mb)
+      require_value "$1" "$#"
+      GUEST_RAM_MB="$2"
+      if ! [[ "${GUEST_RAM_MB}" =~ ^[0-9]+$ ]] || [[ "$((10#${GUEST_RAM_MB}))" -lt 512 || "$((10#${GUEST_RAM_MB}))" -gt 4096 ]]; then
+        reject_input "Flag '--guest-ram-mb' must be an integer between 512 and 4096, got '${GUEST_RAM_MB}'."
+      fi
+      shift 2
+      ;;
+    --guest-ram-mb=*)
+      GUEST_RAM_MB="${1#*=}"
+      if [[ -z "${GUEST_RAM_MB}" ]] || ! [[ "${GUEST_RAM_MB}" =~ ^[0-9]+$ ]] || [[ "$((10#${GUEST_RAM_MB}))" -lt 512 || "$((10#${GUEST_RAM_MB}))" -gt 4096 ]]; then
+        reject_input "Flag '--guest-ram-mb' must be an integer between 512 and 4096, got '${GUEST_RAM_MB}'."
+      fi
+      shift
+      ;;
+    --boot-batch-size)
+      require_value "$1" "$#"
+      BOOT_BATCH_SIZE="$2"
+      if ! [[ "${BOOT_BATCH_SIZE}" =~ ^[0-9]+$ ]] || [[ "$((10#${BOOT_BATCH_SIZE}))" -lt 1 || "$((10#${BOOT_BATCH_SIZE}))" -gt 10 ]]; then
+        reject_input "Flag '--boot-batch-size' must be an integer between 1 and 10, got '${BOOT_BATCH_SIZE}'."
+      fi
+      shift 2
+      ;;
+    --boot-batch-size=*)
+      BOOT_BATCH_SIZE="${1#*=}"
+      if [[ -z "${BOOT_BATCH_SIZE}" ]] || ! [[ "${BOOT_BATCH_SIZE}" =~ ^[0-9]+$ ]] || [[ "$((10#${BOOT_BATCH_SIZE}))" -lt 1 || "$((10#${BOOT_BATCH_SIZE}))" -gt 10 ]]; then
+        reject_input "Flag '--boot-batch-size' must be an integer between 1 and 10, got '${BOOT_BATCH_SIZE}'."
+      fi
+      shift
+      ;;
+    --prepare-snapshots)
+      PREPARE_SNAPSHOTS=1
+      shift
+      ;;
+    --no-snapshot)
+      NO_SNAPSHOT=1
+      shift
+      ;;
+    --keep-alive)
+      KEEP_ALIVE=1
+      shift
+      ;;
+    --reuse-running)
+      REUSE_RUNNING=1
+      shift
+      ;;
+    --guest-gpu)
+      require_value "$1" "$#"
+      GUEST_GPU="$2"
+      case "${GUEST_GPU}" in
+        auto|swiftshader_indirect|off) ;;
+        *) reject_input "Flag '--guest-gpu' must be auto, swiftshader_indirect, or off, got '${GUEST_GPU}'." ;;
+      esac
+      shift 2
+      ;;
+    --guest-gpu=*)
+      GUEST_GPU="${1#*=}"
+      case "${GUEST_GPU}" in
+        auto|swiftshader_indirect|off) ;;
+        *) reject_input "Flag '--guest-gpu' must be auto, swiftshader_indirect, or off, got '${GUEST_GPU}'." ;;
+      esac
+      shift
+      ;;
     -*)
       reject_input "Unknown option '$1'. Run with --help for usage."
       ;;
@@ -252,6 +330,27 @@ if [[ "${NO_TUI}" -eq 1 ]]; then
 fi
 if [[ "${JSON_MODE}" -eq 1 ]]; then
   PY_ARGS+=(--json)
+fi
+if [[ -n "${GUEST_RAM_MB}" ]]; then
+  PY_ARGS+=(--guest-ram-mb "$((10#${GUEST_RAM_MB}))")
+fi
+if [[ -n "${BOOT_BATCH_SIZE}" ]]; then
+  PY_ARGS+=(--boot-batch-size "$((10#${BOOT_BATCH_SIZE}))")
+fi
+if [[ "${PREPARE_SNAPSHOTS}" -eq 1 ]]; then
+  PY_ARGS+=(--prepare-snapshots)
+fi
+if [[ "${NO_SNAPSHOT}" -eq 1 ]]; then
+  PY_ARGS+=(--no-snapshot)
+fi
+if [[ "${KEEP_ALIVE}" -eq 1 ]]; then
+  PY_ARGS+=(--keep-alive)
+fi
+if [[ "${REUSE_RUNNING}" -eq 1 ]]; then
+  PY_ARGS+=(--reuse-running)
+fi
+if [[ -n "${GUEST_GPU}" ]]; then
+  PY_ARGS+=(--guest-gpu "${GUEST_GPU}")
 fi
 
 if [[ "${JSON_MODE}" -eq 0 ]]; then

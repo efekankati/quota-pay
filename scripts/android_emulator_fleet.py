@@ -9,6 +9,8 @@ independently), APK installation, and clean `adb emu kill` shutdown.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import hashlib
 import http.client
 import json
 import os
@@ -26,12 +28,25 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 
 PACKAGE_NAME = "eu.quota.app"
 MAIN_ACTIVITY = f"{PACKAGE_NAME}/.MainActivity"
 DEFAULT_METRO_PORT = 8081
+
+ORGANIZER_SYSIMAGE_REL = "system-images\\android-33\\default\\x86_64\\"
+GUEST_SYSIMAGE_REL = "system-images\\android-33\\aosp_atd\\x86_64\\"
+CLEAN_SNAPSHOT_NAME = "clean_ready"
+APK_SHA_DEVICE_PATH = "/data/local/tmp/quota_apk_sha256"
+
+ORGANIZER_RAM_MB = 1536
+ORGANIZER_HEAP_MB = 256
+ORGANIZER_CORES = 2
+DEFAULT_GUEST_RAM_MB = 1024
+GUEST_HEAP_MB = 192
+GUEST_CORES = 2
+DEFAULT_BOOT_BATCH_SIZE = 2
 
 
 @dataclass(frozen=True)
@@ -165,42 +180,223 @@ def _parse_ini_kv(path: Path) -> Dict[str, str]:
     return result
 
 
+def _norm_sysdir(rel: str) -> str:
+    return rel.replace("\\", "/").strip("/")
+
+
+def _sysdir_to_path(sdk: Path, rel: str) -> Path:
+    parts = [p for p in rel.replace("\\", "/").strip("/").split("/") if p]
+    return sdk.joinpath(*parts)
+
+
+def get_host_memory_mb() -> Tuple[int, int]:
+    """Return (total_physical_mb, available_physical_mb) using stdlib only."""
+    if os.name == "nt":
+        class _MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_uint32),
+                ("dwMemoryLoad", ctypes.c_uint32),
+                ("ullTotalPhys", ctypes.c_uint64),
+                ("ullAvailPhys", ctypes.c_uint64),
+                ("ullTotalPageFile", ctypes.c_uint64),
+                ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64),
+                ("ullAvailVirtual", ctypes.c_uint64),
+                ("ullAvailExtendedVirtual", ctypes.c_uint64),
+            ]
+
+        stat = _MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return (
+                int(stat.ullTotalPhys // (1024 * 1024)),
+                int(stat.ullAvailPhys // (1024 * 1024)),
+            )
+
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        vals: Dict[str, int] = {}
+        for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                num = v.strip().split()[0]
+                if num.isdigit():
+                    vals[k.strip()] = int(num) // 1024
+        return vals.get("MemTotal", 0), vals.get("MemAvailable", vals.get("MemFree", 0))
+    return 0, 0
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with Path(path).open("rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def chunk_slots(slots: Sequence[PhoneSlot], batch_size: int) -> List[List[PhoneSlot]]:
+    step = max(1, int(batch_size))
+    return [list(slots[i : i + step]) for i in range(0, len(slots), step)]
+
+
+def has_clean_snapshot(
+    avd_name: str,
+    snapshot_name: str = CLEAN_SNAPSHOT_NAME,
+    avd_dir: Optional[Path] = None,
+) -> bool:
+    base_dir = avd_dir if avd_dir is not None else resolve_avd_dir()
+    pb_path = base_dir / f"{avd_name}.avd" / "snapshots" / snapshot_name / "snapshot.pb"
+    return pb_path.exists() and pb_path.stat().st_size > 0
+
+
+def read_effective_qemu_ram_mb(avd_name: str, avd_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Read effective config.ini & hardware-qemu.ini RAM/heap/image specs for diagnostics."""
+    folder = (avd_dir if avd_dir is not None else resolve_avd_dir()) / f"{avd_name}.avd"
+    cfg_path = folder / "config.ini"
+    qemu_path = folder / "hardware-qemu.ini"
+    cfg = _parse_ini_kv(cfg_path) if cfg_path.exists() else {}
+    qemu = _parse_ini_kv(qemu_path) if qemu_path.exists() else {}
+
+    def _to_int(val: Optional[str]) -> Optional[int]:
+        if val is None:
+            return None
+        try:
+            return int(str(val).strip())
+        except ValueError:
+            return None
+
+    return {
+        "avd": avd_name,
+        "config_ram_mb": _to_int(cfg.get("hw.ramSize")),
+        "config_heap_mb": _to_int(cfg.get("vm.heapSize")),
+        "config_cores": _to_int(cfg.get("hw.cpu.ncore")),
+        "qemu_ram_mb": _to_int(qemu.get("hw.ramSize")),
+        "qemu_heap_mb": _to_int(qemu.get("vm.heapSize")),
+        "sysdir": cfg.get("image.sysdir.1", ""),
+        "tag_id": cfg.get("tag.id", ""),
+        "has_clean_snapshot": has_clean_snapshot(avd_name, avd_dir=avd_dir),
+    }
+
+
+def scan_logcat_lines_for_oom(logcat_text: str) -> Dict[str, Any]:
+    """Scan logcat text for Android OutOfMemoryError / lowmemorykiller / lmkd kills."""
+    oom_lines: List[str] = []
+    lmk_lines: List[str] = []
+    for raw_line in logcat_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lower = line.lower()
+        if "outofmemoryerror" in lower:
+            oom_lines.append(line[:240])
+        elif (
+            "lowmemorykiller" in lower
+            or ("lmkd" in lower and ("kill" in lower or "oom_kill" in lower))
+            or ("am_kill" in lower and PACKAGE_NAME in lower)
+            or ("killing" in lower and PACKAGE_NAME in lower)
+        ):
+            lmk_lines.append(line[:240])
+
+    samples = (oom_lines + lmk_lines)[:10]
+    return {
+        "oom_error_count": len(oom_lines),
+        "lmk_kill_count": len(lmk_lines),
+        "sample_lines": samples,
+        "has_memory_issue": bool(oom_lines or lmk_lines),
+    }
+
+
 def ensure_isolated_avds(
     emulator_exe: Path,
     slots: List[PhoneSlot],
     *,
-    ram_mb: int = 1536,
-    cores: int = 2,
+    sdk: Optional[Path] = None,
+    avd_dir: Optional[Path] = None,
+    ram_mb: int = ORGANIZER_RAM_MB,
+    guest_ram_mb: int = DEFAULT_GUEST_RAM_MB,
+    cores: int = ORGANIZER_CORES,
     ram_by_avd: Optional[Dict[str, int]] = None,
     cores_by_avd: Optional[Dict[str, int]] = None,
     fresh: bool = False,
+    wipe_snapshots: bool = False,
 ) -> List[str]:
-    """Ensure Quota_Phone_1..N exist as isolated lightweight AVDs cloned from base AVD config."""
-    avd_dir = resolve_avd_dir()
-    avd_dir.mkdir(parents=True, exist_ok=True)
-    existing = list_avds(emulator_exe)
-    base_name = pick_base_avd(existing)
-    base_ini_path = avd_dir / f"{base_name}.ini"
-    if not base_ini_path.exists():
-        raise RuntimeError(f"Base AVD ini missing: {base_ini_path}")
+    """Ensure Quota_Phone_1..N exist with lean image-split profiles & strict RAM clamping.
 
-    base_meta = _parse_ini_kv(base_ini_path)
-    base_folder = Path(base_meta.get("path", avd_dir / f"{base_name}.avd"))
-    if not base_folder.exists():
-        base_folder = avd_dir / f"{base_name}.avd"
-    base_config_path = base_folder / "config.ini"
-    if not base_config_path.exists():
-        raise RuntimeError(f"Base AVD config.ini missing: {base_config_path}")
-
-    base_config = _parse_ini_kv(base_config_path)
-    target = base_meta.get("target", base_config.get("target", "android-36.1"))
+    Organizer (index 1) uses `android-33/default/x86_64`; headless Guests (index 2+) use
+    `android-33/aosp_atd/x86_64`. Any system-image change or hardware/RAM mismatch invalidates
+    stale snapshots/userdata cleanly so Quick Boot never hangs or restores bloated RAM.
+    """
+    sdk_root = sdk if sdk is not None else resolve_android_sdk()
+    target_avd_dir = avd_dir if avd_dir is not None else resolve_avd_dir()
+    target_avd_dir.mkdir(parents=True, exist_ok=True)
 
     ensured: List[str] = []
     for slot in slots:
-        slot_ini = avd_dir / f"{slot.avd}.ini"
-        slot_folder = avd_dir / f"{slot.avd}.avd"
-        if fresh and slot_folder.exists():
+        is_organizer = slot.index == 1 or slot.role == "organizer"
+        if is_organizer:
+            sysdir_rel = ORGANIZER_SYSIMAGE_REL
+            tag_id = "default"
+            tag_display = "Default Android System Image"
+            slot_ram = int(ram_by_avd.get(slot.avd, ram_mb) if ram_by_avd else ram_mb)
+            slot_heap = ORGANIZER_HEAP_MB
+        else:
+            sysdir_rel = GUEST_SYSIMAGE_REL
+            tag_id = "aosp_atd"
+            tag_display = "AOSP ATD"
+            slot_ram = int(ram_by_avd.get(slot.avd, guest_ram_mb) if ram_by_avd else guest_ram_mb)
+            slot_heap = GUEST_HEAP_MB
+
+        slot_cores = int(cores_by_avd.get(slot.avd, cores) if cores_by_avd else cores)
+
+        sysimg_path = _sysdir_to_path(sdk_root, sysdir_rel)
+        if not sysimg_path.exists():
+            pkg_hint = _norm_sysdir(sysdir_rel).replace("/", "/")
+            raise RuntimeError(
+                f"Required Android system image not installed at {sysimg_path}. "
+                f"Install it via: android sdk install {pkg_hint}"
+            )
+
+        slot_ini = target_avd_dir / f"{slot.avd}.ini"
+        slot_folder = target_avd_dir / f"{slot.avd}.avd"
+        prev_cfg_path = slot_folder / "config.ini"
+        prev_qemu_path = slot_folder / "hardware-qemu.ini"
+        prev_cfg = _parse_ini_kv(prev_cfg_path) if prev_cfg_path.exists() else {}
+        prev_qemu = _parse_ini_kv(prev_qemu_path) if prev_qemu_path.exists() else {}
+
+        prev_sysdir = prev_cfg.get("image.sysdir.1", "")
+        sysimg_changed = bool(prev_cfg) and _norm_sysdir(prev_sysdir) != _norm_sysdir(sysdir_rel)
+
+        if (fresh or sysimg_changed) and slot_folder.exists():
             shutil.rmtree(slot_folder, ignore_errors=True)
+        elif slot_folder.exists():
+            hw_changed = (
+                wipe_snapshots
+                or prev_cfg.get("hw.ramSize") != str(slot_ram)
+                or prev_cfg.get("vm.heapSize") != str(slot_heap)
+                or prev_cfg.get("hw.cpu.ncore") != str(slot_cores)
+                or prev_cfg.get("hw.lcd.width") != "720"
+                or prev_cfg.get("hw.lcd.height") != "1280"
+                or prev_cfg.get("hw.lcd.density") != "240"
+                or prev_cfg.get("hw.gpu.mode") != "swiftshader_indirect"
+                or (prev_qemu and prev_qemu.get("hw.ramSize") != str(slot_ram))
+            )
+            if hw_changed:
+                shutil.rmtree(slot_folder / "snapshots", ignore_errors=True)
+                for stale_file in (
+                    "hardware-qemu.ini",
+                    "hardware-qemu.ini.lock",
+                    "multiinstance.lock",
+                    "snapshot.trace.lock",
+                ):
+                    p = slot_folder / stale_file
+                    if p.exists():
+                        try:
+                            p.unlink()
+                        except OSError:
+                            pass
 
         slot_folder.mkdir(parents=True, exist_ok=True)
         ini_content = "\n".join(
@@ -208,27 +404,66 @@ def ensure_isolated_avds(
                 "avd.ini.encoding=UTF-8",
                 f"path={slot_folder}",
                 f"path.rel=avd\\{slot.avd}.avd",
-                f"target={target}",
+                "target=android-33",
             ]
         ) + "\n"
         slot_ini.write_text(ini_content, encoding="utf-8")
 
-        slot_ram = ram_by_avd.get(slot.avd, ram_mb) if ram_by_avd else ram_mb
-        slot_cores = cores_by_avd.get(slot.avd, cores) if cores_by_avd else cores
-
-        slot_config = dict(base_config)
-        slot_config["AvdId"] = slot.avd
-        slot_config["avd.ini.displayname"] = f"Quota Phone {slot.index} ({slot.role})"
-        slot_config["avd.ini.encoding"] = "UTF-8"
-        slot_config["hw.ramSize"] = str(slot_ram)
-        slot_config["hw.cpu.ncore"] = str(slot_cores)
-        slot_config["disk.dataPartition.size"] = "2G"
-        slot_config["fastboot.forceChosenSnapshotBoot"] = "no"
-        slot_config["fastboot.forceColdBoot"] = "no"
-        slot_config["fastboot.forceFastBoot"] = "no"
-        slot_config["showDeviceFrame"] = "no"
-        slot_config["hw.gpu.enabled"] = "yes"
-        slot_config["hw.gpu.mode"] = "auto"
+        slot_config: Dict[str, str] = {
+            "AvdId": slot.avd,
+            "PlayStore.enabled": "false",
+            "abi.type": "x86_64",
+            "avd.ini.displayname": f"Quota Phone {slot.index} ({slot.role})",
+            "avd.ini.encoding": "UTF-8",
+            "disk.dataPartition.size": "2G",
+            "fastboot.chosenSnapshotFile": "",
+            "fastboot.forceChosenSnapshotBoot": "no",
+            "fastboot.forceColdBoot": "no",
+            "fastboot.forceFastBoot": "no",
+            "hw.accelerometer": "no",
+            "hw.arc": "false",
+            "hw.audioInput": "no",
+            "hw.audioOutput": "no",
+            "hw.battery": "yes",
+            "hw.camera.back": "none",
+            "hw.camera.front": "none",
+            "hw.cpu.arch": "x86_64",
+            "hw.cpu.ncore": str(slot_cores),
+            "hw.device.manufacturer": "Generic",
+            "hw.device.name": "quota_lean_phone",
+            "hw.dPad": "no",
+            "hw.gps": "no",
+            "hw.gpu.enabled": "yes",
+            "hw.gpu.mode": "swiftshader_indirect",
+            "hw.gyroscope": "no",
+            "hw.initialOrientation": "portrait",
+            "hw.keyboard": "yes",
+            "hw.lcd.density": "240",
+            "hw.lcd.height": "1280",
+            "hw.lcd.width": "720",
+            "hw.mainKeys": "no",
+            "hw.ramSize": str(slot_ram),
+            "hw.sdCard": "no",
+            "hw.sensors.light": "no",
+            "hw.sensors.magnetic_field": "no",
+            "hw.sensors.orientation": "no",
+            "hw.sensors.pressure": "no",
+            "hw.sensors.proximity": "no",
+            "hw.trackBall": "no",
+            "image.sysdir.1": sysdir_rel,
+            "runtime.network.latency": "none",
+            "runtime.network.speed": "full",
+            "showDeviceFrame": "no",
+            "skin.dynamic": "yes",
+            "skin.name": "720x1280",
+            "skin.path": "_no_skin",
+            "tag.display": tag_display,
+            "tag.displaynames": tag_display,
+            "tag.id": tag_id,
+            "tag.ids": tag_id,
+            "target": "android-33",
+            "vm.heapSize": str(slot_heap),
+        }
 
         cfg_lines = [f"{k}={v}" for k, v in slot_config.items()]
         (slot_folder / "config.ini").write_text("\n".join(cfg_lines) + "\n", encoding="utf-8")
@@ -554,7 +789,10 @@ class AndroidEmulatorFleet:
         metro_port: int = DEFAULT_METRO_PORT,
         headless_guests: bool = True,
         ram_mb: Optional[int] = None,
+        guest_ram_mb: Optional[int] = None,
         cores: Optional[int] = None,
+        boot_batch_size: int = DEFAULT_BOOT_BATCH_SIZE,
+        guest_gpu_mode: str = "swiftshader_indirect",
         on_event: Optional[Callable[[str, str, str], None]] = None,
         quiet_stdout: bool = False,
     ) -> None:
@@ -562,10 +800,11 @@ class AndroidEmulatorFleet:
         self.slots = slots if slots is not None else list(DEFAULT_PHONE_SLOTS)
         self.metro_port = metro_port
         self.headless_guests = headless_guests
-        self._explicit_ram = ram_mb is not None
-        self._explicit_cores = cores is not None
-        self.ram_mb = ram_mb if ram_mb is not None else 1536
-        self.cores = cores if cores is not None else 2
+        self.ram_mb = ram_mb if ram_mb is not None else ORGANIZER_RAM_MB
+        self.guest_ram_mb = guest_ram_mb if guest_ram_mb is not None else DEFAULT_GUEST_RAM_MB
+        self.cores = cores if cores is not None else ORGANIZER_CORES
+        self.boot_batch_size = max(1, int(boot_batch_size))
+        self.guest_gpu_mode = guest_gpu_mode
         self._on_event = on_event
         self._quiet_stdout = quiet_stdout
 
@@ -580,18 +819,18 @@ class AndroidEmulatorFleet:
         self._metro_proc: Optional[subprocess.Popen[bytes]] = None
         self._proxies: Dict[str, DeviceMetroProxy] = {}
         self._last_launch_url: Dict[str, Optional[str]] = {}
+        self._reused_serials: Set[str] = set()
+        self.last_preflight: Dict[str, Any] = {}
         self.events: List[FleetLogRecord] = []
         self._events_lock = threading.Lock()
         self._is_shut_down = False
 
     def _slot_ram_mb(self, slot: PhoneSlot) -> int:
-        if len(self.slots) > 5 and not self._explicit_ram and slot.index > 1:
-            return 1024
-        return self.ram_mb
+        if slot.index == 1 or slot.role == "organizer":
+            return self.ram_mb
+        return self.guest_ram_mb
 
     def _slot_cores(self, slot: PhoneSlot) -> int:
-        if len(self.slots) > 5 and not self._explicit_cores and slot.index > 1:
-            return 1
         return self.cores
 
     def _log(self, serial: str, event: str, detail: str) -> None:
@@ -605,34 +844,109 @@ class AndroidEmulatorFleet:
         if not self._quiet_stdout:
             print(f"[fleet][{serial}] {event}: {detail}", flush=True)
 
-    def kill_existing_emulators(self) -> None:
+    def preflight_check(self) -> Dict[str, Any]:
+        """Verify WHPX/KVM acceleration and host free RAM before booting emulators."""
+        proc = run_cmd([str(self.emulator_exe), "-accel-check"], timeout=20, check=False)
+        raw_out = (proc.stdout + "\n" + proc.stderr).strip()
+        lines = [ln.strip() for ln in raw_out.splitlines() if ln.strip() and ln.strip().lower() != "accel:"]
+        accel_line = next((ln for ln in lines if "usable" in ln.lower()), lines[-1] if lines else raw_out)
+        if proc.returncode != 0 or "usable" not in raw_out.lower():
+            raise RuntimeError(f"Hardware acceleration check failed ({proc.returncode}): {raw_out}")
+        self._log("host", "preflight_accel", accel_line)
+
+        total_ram_mb, free_ram_mb = get_host_memory_mb()
+        requested_guest_mb = sum(self._slot_ram_mb(s) for s in self.slots)
+        estimated_host_mb = requested_guest_mb + 350 * len(self.slots)
+        exceeds_free_ram = bool(free_ram_mb > 0 and estimated_host_mb > free_ram_mb)
+
+        ram_summary = (
+            f"slots={len(self.slots)} guest_sum={requested_guest_mb}MB "
+            f"est_host={estimated_host_mb}MB free_host={free_ram_mb}MB total_host={total_ram_mb}MB"
+        )
+        self._log("host", "preflight_ram", ram_summary)
+
+        ram_warning: Optional[str] = None
+        if exceeds_free_ram:
+            ram_warning = (
+                f"WARNING: Estimated emulator RAM ({estimated_host_mb} MB = {requested_guest_mb} MB guest + overhead) "
+                f"exceeds available host free RAM ({free_ram_mb} MB of {total_ram_mb} MB total). "
+                f"Close unused apps or lower --guests / --guest-ram-mb."
+            )
+            self._log("host", "preflight_ram_warning", ram_warning)
+            print(ram_warning, file=sys.stderr, flush=True)
+
+        self.last_preflight = {
+            "accel": accel_line,
+            "total_host_ram_mb": total_ram_mb,
+            "free_host_ram_mb": free_ram_mb,
+            "requested_guest_ram_mb": requested_guest_mb,
+            "estimated_host_ram_mb": estimated_host_mb,
+            "exceeds_free_ram": exceeds_free_ram,
+            "ram_warning": ram_warning,
+        }
+        return dict(self.last_preflight)
+
+    def kill_existing_emulators(self, *, preserve_serials: Optional[Set[str]] = None) -> None:
+        keep = preserve_serials or set()
         running = list_connected_emulators(self.adb_exe)
-        target_serials = set(running.keys()) | {s.serial for s in self.slots}
+        target_serials = (set(running.keys()) | {s.serial for s in self.slots}) - keep
+        killed_any = False
         for serial in sorted(target_serials):
             if serial in running:
+                killed_any = True
                 self._log(serial, "pre_clean", "killing pre-existing emulator instance")
                 run_cmd([str(self.adb_exe), "-s", serial, "emu", "kill"], timeout=15, check=False)
 
-        deadline = time.time() + 20.0
-        while time.time() < deadline:
-            remaining = list_connected_emulators(self.adb_exe)
-            if not any(s.serial in remaining for s in self.slots):
-                break
-            time.sleep(0.5)
+        if killed_any:
+            deadline = time.time() + 20.0
+            while time.time() < deadline:
+                remaining = list_connected_emulators(self.adb_exe)
+                if not any(s in remaining for s in target_serials):
+                    break
+                time.sleep(0.5)
 
-    def ensure_avds(self, fresh: bool = False) -> List[str]:
-        ram_by_avd = {slot.avd: self._slot_ram_mb(slot) for slot in self.slots}
-        cores_by_avd = {slot.avd: self._slot_cores(slot) for slot in self.slots}
+    def _discover_reusable_slots(self) -> Set[str]:
+        running = list_connected_emulators(self.adb_exe)
+        reusable: Set[str] = set()
+        for slot in self.slots:
+            if running.get(slot.serial) != "device":
+                continue
+            avd_proc = run_cmd([str(self.adb_exe), "-s", slot.serial, "emu", "avd", "name"], timeout=10, check=False)
+            avd_lines = [ln.strip() for ln in avd_proc.stdout.splitlines() if ln.strip() and ln.strip().upper() != "OK"]
+            running_avd = avd_lines[0] if avd_lines else ""
+            boot_proc = run_cmd(
+                [str(self.adb_exe), "-s", slot.serial, "shell", "getprop", "sys.boot_completed"],
+                timeout=10,
+                check=False,
+            )
+            if running_avd == slot.avd and boot_proc.returncode == 0 and boot_proc.stdout.strip() == "1":
+                reusable.add(slot.serial)
+        return reusable
+
+    def ensure_avds(
+        self,
+        fresh: bool = False,
+        wipe_snapshots: bool = False,
+        target_slots: Optional[List[PhoneSlot]] = None,
+    ) -> List[str]:
+        selected = target_slots if target_slots is not None else self.slots
+        if not selected:
+            return []
+        ram_by_avd = {slot.avd: self._slot_ram_mb(slot) for slot in selected}
+        cores_by_avd = {slot.avd: self._slot_cores(slot) for slot in selected}
         ensured = ensure_isolated_avds(
             self.emulator_exe,
-            self.slots,
+            selected,
+            sdk=self.sdk,
             ram_mb=self.ram_mb,
+            guest_ram_mb=self.guest_ram_mb,
             cores=self.cores,
             ram_by_avd=ram_by_avd,
             cores_by_avd=cores_by_avd,
             fresh=fresh,
+            wipe_snapshots=wipe_snapshots,
         )
-        self._log("host", "ensure_avds", f"verified {len(ensured)} AVDs: {', '.join(ensured)}")
+        self._log("host", "ensure_avds", f"verified {len(ensured)} lean AVDs: {', '.join(ensured)}")
         return ensured
 
     def start_metro(self) -> None:
@@ -710,8 +1024,9 @@ class AndroidEmulatorFleet:
                 except OSError:
                     pass
 
-    def _launch_single_emulator(self, slot: PhoneSlot) -> None:
+    def _launch_single_emulator(self, slot: PhoneSlot, *, snapshot_mode: str = "cold") -> None:
         self._clear_stale_avd_locks(slot.avd)
+        slot_ram = self._slot_ram_mb(slot)
         cmd = [
             str(self.emulator_exe),
             "-avd",
@@ -720,10 +1035,10 @@ class AndroidEmulatorFleet:
             str(slot.port),
             "-no-boot-anim",
             "-no-audio",
-            "-no-snapshot-save",
-            "-no-snapshot-load",
+            "-no-metrics",
+            "-no-sim",
             "-memory",
-            str(self._slot_ram_mb(slot)),
+            str(slot_ram),
             "-cores",
             str(self._slot_cores(slot)),
             "-netdelay",
@@ -731,34 +1046,49 @@ class AndroidEmulatorFleet:
             "-netspeed",
             "full",
         ]
-        if self.headless_guests and slot.index > 1:
-            cmd.extend(["-no-window", "-gpu", "swiftshader_indirect"])
+        if slot_ram < 2048:
+            cmd.append("-lowram")
+        if snapshot_mode == "load":
+            cmd.extend(["-snapshot", CLEAN_SNAPSHOT_NAME, "-no-snapshot-save"])
         else:
-            cmd.extend(["-gpu", "auto"])
+            cmd.extend(["-no-snapshot-load", "-no-snapshot-save"])
 
-        log_fp = (self.log_dir / f"{slot.serial}.log").open("wb")
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_fp,
-            stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-        )
+        is_headless = bool(self.headless_guests and slot.index > 1)
+        gpu_mode = self.guest_gpu_mode if is_headless else "swiftshader_indirect"
+        if is_headless:
+            cmd.extend(["-no-window", "-gpu", gpu_mode])
+        else:
+            cmd.extend(["-gpu", gpu_mode])
+
+        with (self.log_dir / f"{slot.serial}.log").open("wb") as log_fp:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_fp,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            )
         self._emu_procs[slot.serial] = proc
         self._log(
             slot.serial,
             "emulator_spawned",
-            f"pid={proc.pid} avd={slot.avd} ram={self._slot_ram_mb(slot)}MB headless={self.headless_guests and slot.index > 1}",
+            f"pid={proc.pid} avd={slot.avd} ram={slot_ram}MB lowram={slot_ram < 2048} "
+            f"headless={is_headless} snapshot={snapshot_mode} gpu={gpu_mode}",
         )
 
     def wait_for_boot(self, slot: PhoneSlot, timeout_s: float = 300.0) -> None:
         deadline = time.time() + timeout_s
         proc = self._emu_procs.get(slot.serial)
+        last_state = ""
+        offline_since: Optional[float] = None
+        retried_reconnect = False
         while time.time() < deadline:
             if proc and proc.poll() is not None:
                 tail = (self.log_dir / f"{slot.serial}.log").read_text(encoding="utf-8", errors="replace")[-2000:]
                 raise RuntimeError(f"Emulator {slot.serial} exited unexpectedly ({proc.returncode}):\n{tail}")
             state = run_cmd([str(self.adb_exe), "-s", slot.serial, "get-state"], timeout=10, check=False)
-            if state.returncode == 0 and state.stdout.strip() == "device":
+            last_state = (state.stdout.strip() or state.stderr.strip())
+            if state.returncode == 0 and last_state == "device":
+                offline_since = None
                 boot = run_cmd(
                     [str(self.adb_exe), "-s", slot.serial, "shell", "getprop", "sys.boot_completed"],
                     timeout=10,
@@ -774,8 +1104,16 @@ class AndroidEmulatorFleet:
                         self._configure_booted_device(slot)
                         self._log(slot.serial, "boot_completed", f"ready on {slot.serial}")
                         return
+            elif "offline" in last_state.lower():
+                if offline_since is None:
+                    offline_since = time.time()
+                elif not retried_reconnect and (time.time() - offline_since) >= 12.0:
+                    retried_reconnect = True
+                    run_cmd([str(self.adb_exe), "reconnect", "offline"], timeout=10, check=False)
+            else:
+                offline_since = None
             time.sleep(2.0)
-        raise TimeoutError(f"Timed out waiting for {slot.serial} to complete boot")
+        raise TimeoutError(f"Timed out waiting for {slot.serial} to complete boot (last_adb_state={last_state!r})")
 
     def _configure_booted_device(self, slot: PhoneSlot) -> None:
         for setting in (
@@ -860,42 +1198,272 @@ class AndroidEmulatorFleet:
                 f"Verified SharedPreferences on {slot.serial} missing localhost:{slot.proxy_port}: {verify.stdout!r}"
             )
 
-    def prepare_host_infrastructure(self) -> None:
+    def prepare_host_infrastructure(
+        self,
+        *,
+        reuse_running: bool = False,
+        fresh_avds: bool = False,
+    ) -> Dict[str, Any]:
+        preflight = self.preflight_check()
         run_cmd([str(self.adb_exe), "start-server"], timeout=20, check=True)
-        self.kill_existing_emulators()
-        self.ensure_avds()
+        if reuse_running:
+            self._reused_serials = self._discover_reusable_slots()
+            self.kill_existing_emulators(preserve_serials=self._reused_serials)
+            missing_slots = [s for s in self.slots if s.serial not in self._reused_serials]
+            if missing_slots:
+                self.ensure_avds(fresh=fresh_avds, target_slots=missing_slots)
+            if self._reused_serials:
+                self._log(
+                    "host",
+                    "warm_pool_check",
+                    f"reusing {len(self._reused_serials)}/{len(self.slots)} running emulator(s)",
+                )
+        else:
+            self._reused_serials = set()
+            self.kill_existing_emulators()
+            self.ensure_avds(fresh=fresh_avds)
         self.start_metro()
         self.start_proxies()
+        return preflight
 
-    def boot_emulators(self, stagger_s: Optional[float] = None, boot_timeout_s: Optional[float] = None) -> None:
-        resolved_stagger = stagger_s if stagger_s is not None else (4.5 if len(self.slots) > 5 else 3.5)
-        resolved_boot_timeout = boot_timeout_s if boot_timeout_s is not None else (360.0 if len(self.slots) > 5 else 300.0)
-        for i, slot in enumerate(self.slots):
-            if i > 0:
-                time.sleep(resolved_stagger)
-            self._launch_single_emulator(slot)
+    def boot_emulators(
+        self,
+        stagger_s: Optional[float] = None,
+        boot_timeout_s: Optional[float] = None,
+        *,
+        batch_size: Optional[int] = None,
+        reuse_running: bool = False,
+        use_snapshot: bool = True,
+        snapshot_name: str = CLEAN_SNAPSHOT_NAME,
+    ) -> None:
+        eff_batch = max(1, int(batch_size if batch_size is not None else self.boot_batch_size))
+        resolved_stagger = stagger_s if stagger_s is not None else 1.5
+        resolved_boot_timeout = boot_timeout_s if boot_timeout_s is not None else 240.0
 
-        with ThreadPoolExecutor(max_workers=len(self.slots)) as pool:
-            futs = {pool.submit(self.wait_for_boot, slot, resolved_boot_timeout): slot for slot in self.slots}
-            for fut in as_completed(futs):
-                fut.result()
+        reusable = self._reused_serials if reuse_running else set()
+        for slot in self.slots:
+            if slot.serial in reusable:
+                self._configure_booted_device(slot)
+                self._log(slot.serial, "reused_running", f"skipped boot on warm {slot.avd}")
 
-    def launch_emulators(self, stagger_s: Optional[float] = None, boot_timeout_s: Optional[float] = None) -> None:
-        self.prepare_host_infrastructure()
-        self.boot_emulators(stagger_s=stagger_s, boot_timeout_s=boot_timeout_s)
+        pending = [slot for slot in self.slots if slot.serial not in reusable]
+        if not pending:
+            return
+
+        batches = chunk_slots(pending, eff_batch)
+        for b_idx, batch in enumerate(batches, start=1):
+            snap_modes = {
+                s.serial: ("load" if (use_snapshot and has_clean_snapshot(s.avd, snapshot_name)) else "cold")
+                for s in batch
+            }
+            desc = ", ".join(f"{s.avd}:{snap_modes[s.serial]}" for s in batch)
+            self._log("host", "boot_batch_start", f"batch {b_idx}/{len(batches)} -> {desc}")
+            for i, slot in enumerate(batch):
+                if i > 0:
+                    time.sleep(resolved_stagger)
+                self._launch_single_emulator(slot, snapshot_mode=snap_modes[slot.serial])
+
+            def _boot_wait(target_slot: PhoneSlot) -> None:
+                if snap_modes[target_slot.serial] == "load":
+                    try:
+                        self.wait_for_boot(target_slot, min(45.0, resolved_boot_timeout))
+                        return
+                    except TimeoutError:
+                        self._log(
+                            target_slot.serial,
+                            "snapshot_fallback_cold",
+                            f"snapshot '{snapshot_name}' did not come online in 45s; falling back to cold boot",
+                        )
+                        self._wait_for_slots_shutdown([target_slot])
+                        self._launch_single_emulator(target_slot, snapshot_mode="cold")
+                self.wait_for_boot(target_slot, resolved_boot_timeout)
+
+            with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+                futs = {pool.submit(_boot_wait, slot): slot for slot in batch}
+                for fut in as_completed(futs):
+                    fut.result()
+            self._log("host", "boot_batch_ready", f"batch {b_idx}/{len(batches)} booted cleanly")
+
+    def launch_emulators(
+        self,
+        stagger_s: Optional[float] = None,
+        boot_timeout_s: Optional[float] = None,
+        *,
+        batch_size: Optional[int] = None,
+        reuse_running: bool = False,
+        use_snapshot: bool = True,
+    ) -> None:
+        self.prepare_host_infrastructure(reuse_running=reuse_running)
+        self.boot_emulators(
+            stagger_s=stagger_s,
+            boot_timeout_s=boot_timeout_s,
+            batch_size=batch_size,
+            reuse_running=reuse_running,
+            use_snapshot=use_snapshot,
+        )
+
+    def _wait_for_slots_shutdown(self, target_slots: Sequence[PhoneSlot], timeout_s: float = 25.0) -> None:
+        target_serials = {s.serial for s in target_slots}
+        for s in target_slots:
+            run_cmd([str(self.adb_exe), "-s", s.serial, "emu", "kill"], timeout=15, check=False)
+
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            still_up = list_connected_emulators(self.adb_exe)
+            procs_alive = [
+                self._emu_procs[ser]
+                for ser in target_serials
+                if ser in self._emu_procs and self._emu_procs[ser].poll() is None
+            ]
+            if not any(ser in still_up for ser in target_serials) and not procs_alive:
+                break
+            time.sleep(0.5)
+
+        for ser in target_serials:
+            proc = self._emu_procs.get(ser)
+            if proc and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
+    def prepare_clean_snapshots(
+        self,
+        apk_path: Path,
+        *,
+        batch_size: Optional[int] = None,
+        snapshot_name: str = CLEAN_SNAPSHOT_NAME,
+    ) -> Dict[str, Any]:
+        """Cold-boot each AVD in batches, pre-install APK, save `clean_ready` snapshot, and shut down."""
+        apk_path = Path(apk_path)
+        if not apk_path.exists():
+            raise FileNotFoundError(f"APK not found: {apk_path}")
+        apk_sha = file_sha256(apk_path)
+
+        t0 = time.time()
+        preflight = self.preflight_check()
+        run_cmd([str(self.adb_exe), "start-server"], timeout=20, check=True)
+        self.kill_existing_emulators()
+        self.ensure_avds(wipe_snapshots=True)
+
+        eff_batch = max(1, int(batch_size if batch_size is not None else self.boot_batch_size))
+        batches = chunk_slots(self.slots, eff_batch)
+
+        try:
+            for b_idx, batch in enumerate(batches, start=1):
+                self._log(
+                    "host",
+                    "snapshot_batch_start",
+                    f"batch {b_idx}/{len(batches)} -> {', '.join(s.avd for s in batch)}",
+                )
+                for i, slot in enumerate(batch):
+                    if i > 0:
+                        time.sleep(1.5)
+                    self._launch_single_emulator(slot, snapshot_mode="prepare")
+
+                with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+                    futs = [pool.submit(self.wait_for_boot, slot, 240.0) for slot in batch]
+                    for f in as_completed(futs):
+                        f.result()
+
+                def _prep_and_save(slot: PhoneSlot) -> None:
+                    self._configure_booted_device(slot)
+                    run_cmd(
+                        [str(self.adb_exe), "-s", slot.serial, "install", "-r", "-g", str(apk_path)],
+                        timeout=180,
+                        check=True,
+                    )
+                    self._write_apk_sha(slot.serial, apk_sha, check=True)
+                    run_cmd([str(self.adb_exe), "-s", slot.serial, "shell", "pm", "clear", PACKAGE_NAME], timeout=20, check=False)
+                    self._configure_app_debug_host(slot)
+                    run_cmd([str(self.adb_exe), "-s", slot.serial, "shell", "sync"], timeout=15, check=False)
+                    time.sleep(1.0)
+                    snap_res = run_cmd(
+                        [str(self.adb_exe), "-s", slot.serial, "emu", "avd", "snapshot", "save", snapshot_name],
+                        timeout=120,
+                        check=True,
+                    )
+                    combined = (snap_res.stdout + "\n" + snap_res.stderr).strip()
+                    if "KO:" in combined or not has_clean_snapshot(slot.avd, snapshot_name):
+                        raise RuntimeError(f"Snapshot save failed on {slot.avd} ({slot.serial}): {combined}")
+                    self._log(slot.serial, "snapshot_saved", f"{slot.avd} -> {snapshot_name}")
+
+                with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+                    futs = [pool.submit(_prep_and_save, slot) for slot in batch]
+                    for f in as_completed(futs):
+                        f.result()
+
+                self._wait_for_slots_shutdown(batch)
+                self._log("host", "snapshot_batch_done", f"batch {b_idx}/{len(batches)} saved & stopped")
+        finally:
+            self._wait_for_slots_shutdown(self.slots)
+
+        duration_s = round(time.time() - t0, 2)
+        avd_configs = {slot.avd: read_effective_qemu_ram_mb(slot.avd) for slot in self.slots}
+        return {
+            "status": "PASSED",
+            "snapshot": snapshot_name,
+            "apk_sha256": apk_sha,
+            "duration_s": duration_s,
+            "preflight": preflight,
+            "avds": avd_configs,
+        }
+
+    def _write_apk_sha(self, serial: str, apk_sha: str, *, check: bool = True) -> None:
+        proc = subprocess.run(
+            [str(self.adb_exe), "-s", serial, "shell", "tee", APK_SHA_DEVICE_PATH],
+            input=apk_sha.encode("ascii"),
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+        if check and proc.returncode != 0:
+            stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+            stdout = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"Failed writing APK SHA on {serial} ({proc.returncode}): {stdout} {stderr}")
 
     def install_and_prepare_app(self, apk_path: Path, clear_data: bool = True) -> None:
         apk_path = Path(apk_path)
         if not apk_path.exists():
             raise FileNotFoundError(f"APK not found: {apk_path}")
+        apk_sha = file_sha256(apk_path)
 
         def _install_one(slot: PhoneSlot) -> None:
+            pkg_check = run_cmd(
+                [str(self.adb_exe), "-s", slot.serial, "shell", "pm", "path", PACKAGE_NAME],
+                timeout=15,
+                check=False,
+            )
+            sha_check = run_cmd(
+                [str(self.adb_exe), "-s", slot.serial, "shell", "cat", APK_SHA_DEVICE_PATH],
+                timeout=15,
+                check=False,
+            )
+            installed_ok = pkg_check.returncode == 0 and "package:" in pkg_check.stdout
+            sha_matches = sha_check.returncode == 0 and sha_check.stdout.strip() == apk_sha
+
+            if installed_ok and sha_matches:
+                if clear_data:
+                    run_cmd([str(self.adb_exe), "-s", slot.serial, "shell", "pm", "clear", PACKAGE_NAME], timeout=20, check=False)
+                self._configure_app_debug_host(slot)
+                self._log(
+                    slot.serial,
+                    "apk_reused_fast",
+                    f"skipped adb install (SHA match); reset + debug_http_host=localhost:{slot.proxy_port}",
+                )
+                return
+
             self._log(slot.serial, "apk_install_start", apk_path.name)
             run_cmd(
                 [str(self.adb_exe), "-s", slot.serial, "install", "-r", "-g", str(apk_path)],
                 timeout=180,
                 check=True,
             )
+            self._write_apk_sha(slot.serial, apk_sha, check=False)
             if clear_data:
                 run_cmd([str(self.adb_exe), "-s", slot.serial, "shell", "pm", "clear", PACKAGE_NAME], timeout=20, check=False)
             self._configure_app_debug_host(slot)
@@ -905,6 +1473,124 @@ class AndroidEmulatorFleet:
             futs = [pool.submit(_install_one, slot) for slot in self.slots]
             for fut in as_completed(futs):
                 fut.result()
+
+    def clear_logcat_buffers(self) -> None:
+        for slot in self.slots:
+            run_cmd([str(self.adb_exe), "-s", slot.serial, "logcat", "-c"], timeout=10, check=False)
+
+    def scan_logcat_memory_health(self) -> Dict[str, Any]:
+        """Scan logcat across all fleet emulators for OutOfMemoryError or lowmemorykiller kills."""
+        devices_report: Dict[str, Any] = {}
+        total_oom = 0
+        total_lmk = 0
+        for slot in self.slots:
+            proc = run_cmd([str(self.adb_exe), "-s", slot.serial, "logcat", "-d"], timeout=20, check=False)
+            parsed = scan_logcat_lines_for_oom(proc.stdout or "")
+            parsed["role"] = slot.role
+            parsed["guest_name"] = slot.guest_name
+            parsed["ram_mb"] = self._slot_ram_mb(slot)
+            devices_report[slot.serial] = parsed
+            total_oom += int(parsed["oom_error_count"])
+            total_lmk += int(parsed["lmk_kill_count"])
+            if parsed["has_memory_issue"]:
+                self._log(
+                    slot.serial,
+                    "memory_warning",
+                    f"OOM={parsed['oom_error_count']} LMK={parsed['lmk_kill_count']} on {slot.avd} ({self._slot_ram_mb(slot)}MB); consider higher --guest-ram-mb",
+                )
+
+        summary = {
+            "total_oom_errors": total_oom,
+            "total_lmk_kills": total_lmk,
+            "any_memory_issue": bool(total_oom or total_lmk),
+            "devices": devices_report,
+        }
+        self._log(
+            "host",
+            "memory_health",
+            f"OOM={total_oom}, LMK={total_lmk} across {len(self.slots)} emulator(s)",
+        )
+        return summary
+
+    def measure_fleet_ram_mb(self) -> Dict[str, Any]:
+        """Measure actual host QEMU RAM (Working Set & Private Bytes) and guest `/proc/meminfo`."""
+        qemu_configs: Dict[str, Dict[str, Any]] = {}
+        for slot in self.slots:
+            cfg_info = read_effective_qemu_ram_mb(slot.avd)
+            mem_proc = run_cmd(
+                [str(self.adb_exe), "-s", slot.serial, "shell", "head", "-n", "1", "/proc/meminfo"],
+                timeout=10,
+                check=False,
+            )
+            m = re.search(r"MemTotal:\s+(\d+)\s+kB", mem_proc.stdout or "")
+            cfg_info["guest_memtotal_mb"] = round(int(m.group(1)) / 1024.0, 1) if m else None
+            qemu_configs[slot.avd] = cfg_info
+
+        pid_to_serial = {
+            proc.pid: ser for ser, proc in self._emu_procs.items() if proc.poll() is None
+        }
+        avd_to_serial = {slot.avd: slot.serial for slot in self.slots}
+        managed_avds = set(avd_to_serial.keys())
+        processes: List[Dict[str, Any]] = []
+
+        if os.name == "nt":
+            ps_cmd = (
+                "Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'qemu-system-*' } | "
+                "Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,PrivatePageCount,CommandLine | "
+                "ConvertTo-Json -Compress"
+            )
+            proc = run_cmd(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                timeout=15,
+                check=False,
+            )
+            raw = (proc.stdout or "").strip()
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    rows = [parsed] if isinstance(parsed, dict) else (parsed if isinstance(parsed, list) else [])
+                    for row in rows:
+                        pid = int(row.get("ProcessId", 0))
+                        ppid = int(row.get("ParentProcessId", 0))
+                        cmdline = str(row.get("CommandLine") or "")
+                        avd_match = re.search(r"-avd\s+(\S+)", cmdline)
+                        matched_avd = avd_match.group(1).strip('"') if avd_match else None
+                        serial = pid_to_serial.get(ppid) or (avd_to_serial.get(matched_avd) if matched_avd else None)
+                        if matched_avd and matched_avd not in managed_avds and serial is None:
+                            continue
+                        if not matched_avd and serial is None:
+                            continue
+                        ws_mb = round(float(row.get("WorkingSetSize") or 0) / (1024 * 1024), 1)
+                        priv_mb = round(float(row.get("PrivatePageCount") or 0) / (1024 * 1024), 1)
+                        processes.append(
+                            {
+                                "pid": pid,
+                                "parent_pid": ppid,
+                                "serial": serial,
+                                "avd": matched_avd,
+                                "name": row.get("Name", ""),
+                                "working_set_mb": ws_mb,
+                                "private_mb": priv_mb,
+                            }
+                        )
+                except Exception:
+                    pass
+
+        tot_ws = round(sum(p["working_set_mb"] for p in processes), 1)
+        tot_priv = round(sum(p["private_mb"] for p in processes), 1)
+        bench = {
+            "process_count": len(processes),
+            "total_working_set_mb": tot_ws,
+            "total_private_mb": tot_priv,
+            "processes": processes,
+            "qemu_configs": qemu_configs,
+        }
+        self._log(
+            "host",
+            "ram_benchmark",
+            f"qemu_procs={len(processes)} WorkingSet={tot_ws}MB Private={tot_priv}MB",
+        )
+        return bench
 
     def launch_app(self, slot: PhoneSlot, deep_link_url: Optional[str] = None) -> None:
         self._last_launch_url[slot.serial] = deep_link_url
@@ -991,37 +1677,29 @@ class AndroidEmulatorFleet:
             f"Inspector target not registered for {slot.serial} on :{slot.proxy_port} ({last_err}; {diag_detail})"
         )
 
-    def shutdown(self) -> None:
+    def shutdown(self, *, keep_emulators_alive: bool = False) -> None:
         if self._is_shut_down:
             return
         self._is_shut_down = True
-        self._log("host", "shutdown_start", "Shutting down all emulators, proxies, and Metro...")
-
-        running = list_connected_emulators(self.adb_exe)
-        for serial in sorted(set(running.keys()) | {s.serial for s in self.slots}):
-            run_cmd([str(self.adb_exe), "-s", serial, "emu", "kill"], timeout=15, check=False)
-
-        deadline = time.time() + 20.0
-        while time.time() < deadline:
-            still_up = list_connected_emulators(self.adb_exe)
-            if not any(s.serial in still_up for s in self.slots):
-                break
-            time.sleep(0.5)
-
-        for serial, proc in list(self._emu_procs.items()):
-            if proc.poll() is None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=5)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
 
         for proxy in self._proxies.values():
             proxy.stop()
         self._proxies.clear()
+
+        if keep_emulators_alive:
+            self._log(
+                "host",
+                "shutdown_skipped_keep_alive",
+                "Keeping booted emulators & Metro alive (--keep-alive); stopped per-device proxies.",
+            )
+            return
+
+        self._log("host", "shutdown_start", "Shutting down all emulators, proxies, and Metro...")
+        self._wait_for_slots_shutdown(self.slots)
+
+        running = list_connected_emulators(self.adb_exe)
+        for serial in sorted(running.keys()):
+            run_cmd([str(self.adb_exe), "-s", serial, "emu", "kill"], timeout=15, check=False)
 
         if self._metro_proc and self._metro_proc.poll() is None:
             if os.name == "nt":
@@ -1046,9 +1724,21 @@ class AndroidEmulatorFleet:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Quota Pay Multi-Phone Android Emulator Fleet Manager")
-    parser.add_argument("action", choices=["ensure-avds", "up", "down", "status"])
+    parser.add_argument("action", choices=["ensure-avds", "prepare-snapshots", "up", "down", "status", "preflight"])
     parser.add_argument("--count", type=int, default=5, help=ALL_PHONE_SLOTS_TOTAL_HELP)
     parser.add_argument("--headless-guests", action="store_true", help="Pass -no-window to guest emulators")
+    parser.add_argument("--guest-ram-mb", type=int, default=DEFAULT_GUEST_RAM_MB, help="Guest RAM in MB (default: 1024)")
+    parser.add_argument("--boot-batch-size", type=int, default=DEFAULT_BOOT_BATCH_SIZE, help="Emulators to boot per batch (default: 2)")
+    parser.add_argument("--prepare-snapshots", action="store_true", help="Prepare clean_ready snapshots during action")
+    parser.add_argument("--no-snapshot", action="store_true", help="Force cold boot without clean_ready snapshots")
+    parser.add_argument("--keep-alive", action="store_true", help="Keep booted emulators alive after exit")
+    parser.add_argument("--reuse-running", action="store_true", help="Reuse already-booted fleet AVDs")
+    parser.add_argument(
+        "--guest-gpu",
+        choices=["auto", "swiftshader_indirect", "off"],
+        default="swiftshader_indirect",
+        help="GPU mode for headless guest emulators",
+    )
     parser.add_argument("--apk", type=str, default="android/app/build/outputs/apk/debug/app-debug.apk")
     parser.add_argument("--fresh-avds", action="store_true")
     parser.add_argument("--hold", action="store_true", help="Keep fleet running until Ctrl+C (then clean shutdown)")
@@ -1060,7 +1750,14 @@ def main() -> int:
         project_root=project_root,
         slots=slots,
         headless_guests=args.headless_guests,
+        guest_ram_mb=args.guest_ram_mb,
+        boot_batch_size=args.boot_batch_size,
+        guest_gpu_mode=args.guest_gpu,
     )
+
+    if args.action == "preflight":
+        print(json.dumps(fleet.preflight_check(), indent=2))
+        return 0
 
     if args.action == "ensure-avds":
         fleet.ensure_avds(fresh=args.fresh_avds)
@@ -1074,6 +1771,15 @@ def main() -> int:
         fleet.kill_existing_emulators()
         return 0
 
+    apk = Path(args.apk)
+    if not apk.is_absolute():
+        apk = project_root / apk
+
+    if args.action == "prepare-snapshots" or args.prepare_snapshots:
+        summary = fleet.prepare_clean_snapshots(apk, batch_size=args.boot_batch_size)
+        print(json.dumps(summary, indent=2))
+        return 0
+
     def _sig_handler(_signum: int, _frame: object) -> None:
         fleet.shutdown()
         sys.exit(130)
@@ -1082,10 +1788,11 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _sig_handler)
 
     try:
-        fleet.launch_emulators()
-        apk = Path(args.apk)
-        if not apk.is_absolute():
-            apk = project_root / apk
+        fleet.launch_emulators(
+            batch_size=args.boot_batch_size,
+            reuse_running=args.reuse_running,
+            use_snapshot=not args.no_snapshot,
+        )
         if apk.exists():
             fleet.install_and_prepare_app(apk)
             fleet.launch_app(slots[0])
@@ -1095,8 +1802,8 @@ def main() -> int:
                 time.sleep(2.0)
         return 0
     finally:
-        if args.hold:
-            fleet.shutdown()
+        if args.hold or args.keep_alive:
+            fleet.shutdown(keep_emulators_alive=args.keep_alive and not args.hold)
 
 
 if __name__ == "__main__":

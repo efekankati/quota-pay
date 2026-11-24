@@ -48,6 +48,8 @@ from e2e.e2e_telemetry import (  # noqa: E402
 )
 from scripts.android_emulator_fleet import (  # noqa: E402
     AndroidEmulatorFleet,
+    DEFAULT_BOOT_BATCH_SIZE,
+    DEFAULT_GUEST_RAM_MB,
     DEFAULT_PHONE_SLOTS,
     PhoneSlot,
     build_phone_slots,
@@ -631,6 +633,12 @@ def run_e2e(
     ui_port: int = 8765,
     ui_keep_open: bool = False,
     json_mode: bool = False,
+    guest_ram_mb: int = DEFAULT_GUEST_RAM_MB,
+    boot_batch_size: int = DEFAULT_BOOT_BATCH_SIZE,
+    no_snapshot: bool = False,
+    keep_alive: bool = False,
+    reuse_running: bool = False,
+    guest_gpu: str = "swiftshader_indirect",
 ) -> Dict[str, Any]:
     validate_guest_config(num_guests, headless_guests)
     slots = build_phone_slots(num_guests)
@@ -775,6 +783,9 @@ def run_e2e(
         project_root=PROJECT_ROOT,
         slots=slots,
         headless_guests=headless_guests,
+        guest_ram_mb=guest_ram_mb,
+        boot_batch_size=boot_batch_size,
+        guest_gpu_mode=guest_gpu,
         on_event=_on_fleet_event,
         quiet_stdout=True,
     )
@@ -794,6 +805,12 @@ def run_e2e(
         "num_guests": num_guests,
         "total_diners": total_diners,
         "headless_guests": headless_guests,
+        "guest_ram_mb": guest_ram_mb,
+        "boot_batch_size": boot_batch_size,
+        "use_snapshot": not no_snapshot,
+        "keep_alive": keep_alive,
+        "reuse_running": reuse_running,
+        "guest_gpu": guest_gpu,
         "apk_path": str(apk_path),
         "expected_grand_total_cents": expected_grand_total_cents,
         "report_json_path": str(out_path),
@@ -816,7 +833,7 @@ def run_e2e(
             jsonl_obs.close()
         except Exception:
             pass
-        fleet.shutdown()
+        fleet.shutdown(keep_emulators_alive=False)
         sys.exit(130)
 
     signal.signal(signal.SIGINT, _sig_handler)
@@ -835,7 +852,10 @@ def run_e2e(
                     stage_id="pipeline",
                     status="RUNNING",
                     step=f"starting {total_diners}-phone E2E pipeline",
-                    detail=f"diners=1+{num_guests}, mode={'headless' if headless_guests else 'visible'}",
+                    detail=(
+                        f"diners=1+{num_guests}, mode={'headless' if headless_guests else 'visible'}, "
+                        f"guest_ram={guest_ram_mb}MB, batch={boot_batch_size}"
+                    ),
                     run_id=run_id,
                 )
             )
@@ -843,29 +863,37 @@ def run_e2e(
             # Stage 1: Fleet & Metro Bootstrap
             st1 = _begin_stage(
                 "fleet_bootstrap",
-                "preparing ADB, AVDs, Metro & CDP proxies",
-                detail=f"{total_diners} slot(s) configured",
+                "running pre-flight checks, AVD setup, Metro & CDP proxies",
+                detail=f"{total_diners} slot(s), guest_ram={guest_ram_mb}MB",
             )
-            fleet.prepare_host_infrastructure()
+            preflight = fleet.prepare_host_infrastructure(reuse_running=reuse_running)
+            report["preflight"] = preflight
             _end_stage(
                 "fleet_bootstrap",
                 "host infrastructure ready",
                 st1,
-                detail=f"{len(slots)} AVDs & proxies on ports {slots[0].proxy_port}..{slots[-1].proxy_port}",
+                detail=(
+                    f"{len(slots)} AVDs on ports {slots[0].proxy_port}..{slots[-1].proxy_port} | "
+                    f"free_ram={preflight.get('free_host_ram_mb', '-')}MB"
+                ),
             )
 
             # Stage 2: Emulator Boot & ADB Ready
             st2 = _begin_stage(
                 "emulator_boot",
-                f"spawning {total_diners} emulator(s)",
-                detail="waiting for sys.boot_completed=1 and package manager",
+                f"booting {total_diners} emulator(s) in batches of {boot_batch_size}",
+                detail=f"snapshot={'enabled' if not no_snapshot else 'disabled'}, reuse_running={reuse_running}",
             )
-            fleet.boot_emulators()
+            fleet.boot_emulators(
+                batch_size=boot_batch_size,
+                reuse_running=reuse_running,
+                use_snapshot=not no_snapshot,
+            )
             boot_duration_s = round(time.perf_counter() - st2, 2)
             report["boot_duration_s"] = boot_duration_s
             _end_stage(
                 "emulator_boot",
-                f"all {total_diners} emulators booted",
+                f"all {total_diners} emulators ready",
                 st2,
                 detail=f"booted in {boot_duration_s}s",
             )
@@ -873,15 +901,16 @@ def run_e2e(
             # Stage 3: APK Deploy & Debug Host
             st3 = _begin_stage(
                 "apk_deploy",
-                f"installing {apk_path.name} across {total_diners} device(s)",
-                detail="clearing app state and wiring debug_http_host",
+                f"deploying/resetting {apk_path.name} across {total_diners} device(s)",
+                detail="verifying SHA match or installing + wiring debug_http_host",
             )
             fleet.install_and_prepare_app(apk_path, clear_data=True)
+            fleet.clear_logcat_buffers()
             install_duration_s = round(time.perf_counter() - st3, 2)
             report["install_duration_s"] = install_duration_s
             _end_stage(
                 "apk_deploy",
-                f"APK installed on {total_diners} device(s)",
+                f"APK ready on {total_diners} device(s)",
                 st3,
                 detail=f"prepared in {install_duration_s}s",
             )
@@ -1180,10 +1209,10 @@ def run_e2e(
                 device_serial=org_slot.serial,
             )
 
-            # Stage 8: Verification, Cleanup & Report
+            # Stage 8: Verification, RAM/OOM Benchmark, Cleanup & Report
             st8 = _begin_stage(
                 "audit_and_cleanup",
-                "verifying Phone 1 live UI & Supabase state",
+                "verifying Phone 1 live UI, Supabase state, host RAM & logcat OOM health",
                 detail=f"expected_grand_total=EUR {expected_grand_total_str}",
                 device_serial=org_slot.serial,
             )
@@ -1261,7 +1290,12 @@ def run_e2e(
                     f"bill_splits sum {splits_sum_cents}c != {expected_grand_total_cents}c"
                 )
 
-            fleet.shutdown()
+            ram_benchmark = fleet.measure_fleet_ram_mb()
+            memory_health = fleet.scan_logcat_memory_health()
+            report["ram_benchmark"] = ram_benchmark
+            report["memory_health"] = memory_health
+
+            fleet.shutdown(keep_emulators_alive=keep_alive)
             remaining_after = list_connected_emulators(fleet.adb_exe)
             report["remaining_emulators_after_shutdown"] = remaining_after
 
@@ -1288,11 +1322,16 @@ def run_e2e(
             }
             report["settled_bill"] = settled_bill
 
+            cleanup_detail = (
+                f"remaining_emulators={len(remaining_after)} ({'kept alive' if keep_alive else 'shut down'}) | "
+                f"host_ws={ram_benchmark.get('total_working_set_mb', '-')}MB "
+                f"oom={memory_health.get('total_oom_errors', 0)} lmk={memory_health.get('total_lmk_kills', 0)}"
+            )
             _end_stage(
                 "audit_and_cleanup",
-                "UI & Supabase verified (+/-0.00 EUR); fleet shut down",
+                "UI & Supabase verified (+/-0.00 EUR); RAM & OOM checked",
                 st8,
-                detail=f"remaining_emulators={len(remaining_after)}",
+                detail=cleanup_detail,
             )
             bus.emit(
                 E2EEvent(
@@ -1333,7 +1372,7 @@ def run_e2e(
             raise
         finally:
             if not fleet._is_shut_down and (succeeded or not keep_alive_on_fail):
-                fleet.shutdown()
+                fleet.shutdown(keep_emulators_alive=bool(keep_alive and succeeded))
                 report["remaining_emulators_after_shutdown"] = list_connected_emulators(fleet.adb_exe)
 
             report["finished_at"] = datetime.now(timezone.utc).isoformat()
@@ -1356,9 +1395,13 @@ def run_e2e(
                         "num_guests": num_guests,
                         "total_diners": total_diners,
                         "headless_guests": headless_guests,
+                        "boot_duration_s": report.get("boot_duration_s"),
+                        "install_duration_s": report.get("install_duration_s"),
                         "total_duration_s": report["total_duration_s"],
                         "telemetry_overhead_ms": report["telemetry_overhead_ms"],
                         "expected_grand_total_cents": expected_grand_total_cents,
+                        "ram_benchmark": report.get("ram_benchmark"),
+                        "memory_health": report.get("memory_health"),
                         "report_json_path": str(out_path),
                         "audit_md_path": str(audit_md_path),
                         "state_timeline_path": str(timeline_path),
@@ -1367,13 +1410,26 @@ def run_e2e(
                     print(json.dumps(summary_payload, indent=2), flush=True)
             else:
                 mode_label = "HEADLESS GUESTS" if headless_guests else "ALL WINDOWS SHOWN"
+                rb = report.get("ram_benchmark") or {}
+                mh = report.get("memory_health") or {}
                 print("=" * 76, flush=True)
                 print("QUOTA PAY — MULTI-EMULATOR ANDROID DEPLOYMENT & E2E PIPELINE", flush=True)
                 print(f"   Run ID          : {run_id}", flush=True)
                 print(f"   Diners          : 1 Organizer + {num_guests} Guest(s) ({total_diners} total)", flush=True)
-                print(f"   Window Mode     : {mode_label}", flush=True)
+                print(f"   Window Mode     : {mode_label} (Guest RAM={guest_ram_mb}MB, Batch={boot_batch_size})", flush=True)
                 print(f"   Final Status    : {report['status']}", flush=True)
-                print(f"   Duration        : {report['total_duration_s']}s", flush=True)
+                print(f"   Boot / Total    : {report.get('boot_duration_s', '-')}s / {report['total_duration_s']}s", flush=True)
+                if rb:
+                    print(
+                        f"   Host Fleet RAM  : WorkingSet={rb.get('total_working_set_mb', '-')}MB "
+                        f"| Private={rb.get('total_private_mb', '-')}MB ({rb.get('process_count', 0)} procs)",
+                        flush=True,
+                    )
+                if mh:
+                    print(
+                        f"   Memory Health   : OOM={mh.get('total_oom_errors', 0)} | LMK kills={mh.get('total_lmk_kills', 0)}",
+                        flush=True,
+                    )
                 print(f"   Event Overhead  : {report['telemetry_overhead_ms']:.3f}ms", flush=True)
                 print("=" * 76, flush=True)
                 for st in final_snapshot["stages"]:
@@ -1420,6 +1476,18 @@ def main() -> int:
     mode_group.add_argument("--headless-guests", dest="headless_guests", action="store_true")
     mode_group.add_argument("--show-all-windows", "--all-windows", dest="headless_guests", action="store_false")
     parser.set_defaults(headless_guests=True)
+    parser.add_argument("--guest-ram-mb", type=int, default=DEFAULT_GUEST_RAM_MB, help="Guest AVD RAM in MB (512-4096)")
+    parser.add_argument("--boot-batch-size", type=int, default=DEFAULT_BOOT_BATCH_SIZE, help="Emulators to boot per batch (1-10)")
+    parser.add_argument("--prepare-snapshots", action="store_true", help="Pre-warm clean_ready snapshots and exit")
+    parser.add_argument("--no-snapshot", action="store_true", help="Force cold boot without clean_ready snapshots")
+    parser.add_argument("--keep-alive", action="store_true", help="Keep emulators running after E2E passes")
+    parser.add_argument("--reuse-running", action="store_true", help="Reuse running fleet emulators and reset app via pm clear")
+    parser.add_argument(
+        "--guest-gpu",
+        choices=["auto", "swiftshader_indirect", "off"],
+        default="swiftshader_indirect",
+        help="GPU mode for headless guest emulators",
+    )
     parser.add_argument("--seed", type=int, default=int(time.time()))
     parser.add_argument("--apk", type=str, default="android/app/build/outputs/apk/debug/app-debug.apk")
     parser.add_argument("--keep-alive-on-fail", action="store_true", default=False)
@@ -1459,10 +1527,38 @@ def main() -> int:
             flush=True,
         )
         raise SystemExit(2)
+    if args.guest_ram_mb < 512 or args.guest_ram_mb > 4096:
+        print(
+            f"ERROR: Invalid --guest-ram-mb ({args.guest_ram_mb}). Must be between 512 and 4096.",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(2)
+    if args.boot_batch_size < 1 or args.boot_batch_size > 10:
+        print(
+            f"ERROR: Invalid --boot-batch-size ({args.boot_batch_size}). Must be between 1 and 10.",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(2)
 
     apk = Path(args.apk)
     if not apk.is_absolute():
         apk = PROJECT_ROOT / apk
+
+    if args.prepare_snapshots:
+        slots = build_phone_slots(args.guests)
+        fleet = AndroidEmulatorFleet(
+            project_root=PROJECT_ROOT,
+            slots=slots,
+            headless_guests=args.headless_guests,
+            guest_ram_mb=args.guest_ram_mb,
+            boot_batch_size=args.boot_batch_size,
+            guest_gpu_mode=args.guest_gpu,
+        )
+        summary = fleet.prepare_clean_snapshots(apk, batch_size=args.boot_batch_size)
+        print(json.dumps(summary, indent=2), flush=True)
+        return 0
 
     run_e2e(
         num_guests=args.guests,
@@ -1475,6 +1571,12 @@ def main() -> int:
         ui_port=args.ui_port,
         ui_keep_open=args.ui_keep_open,
         json_mode=args.json,
+        guest_ram_mb=args.guest_ram_mb,
+        boot_batch_size=args.boot_batch_size,
+        no_snapshot=args.no_snapshot,
+        keep_alive=args.keep_alive,
+        reuse_running=args.reuse_running,
+        guest_gpu=args.guest_gpu,
     )
     if not args.json:
         print(f"[e2e] ALL {1 + args.guests}-PHONE ANDROID E2E ASSERTIONS PASSED!", flush=True)

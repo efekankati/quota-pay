@@ -910,16 +910,80 @@ def write_markdown_audit_report(
     )
 
     device_logs = report.get("device_logs") or {}
+    mem_devices = ((report.get("memory_health") or {}).get("devices")) or {}
+    proc_by_serial = {
+        str(p["serial"]): p for p in ((report.get("ram_benchmark") or {}).get("processes") or []) if p.get("serial")
+    }
+    qemu_by_avd = (report.get("ram_benchmark") or {}).get("qemu_configs") or {}
+
     for dev in snapshot.get("devices", []):
         serial = str(dev.get("serial", "-"))
+        avd = str(dev.get("avd", "-"))
         role_name = "Organizer" if dev.get("role") == "organizer" else f"Guest ({dev.get('guest_name') or 'Guest'})"
         mode_col = "headless (`-no-window`)" if dev.get("headless") else "visible window"
         driver_log_count = len(device_logs.get(serial, []))
         total_actions = max(driver_log_count, int(dev.get("action_count", 0)))
         lines.append(
-            f"| `{serial}` | {role_name} | `{dev.get('avd', '-')}` | `{dev.get('proxy_port', '-')}` | "
+            f"| `{serial}` | {role_name} | `{avd}` | `{dev.get('proxy_port', '-')}` | "
             f"{mode_col} | **{dev.get('status', 'PENDING')}** | `{total_actions}` |"
         )
+
+    preflight = report.get("preflight") or {}
+    ram_bench = report.get("ram_benchmark") or {}
+    mem_health = report.get("memory_health") or {}
+    if preflight or ram_bench or mem_health:
+        lines.extend(
+            [
+                "",
+                "### Hardware, RAM & Logcat Memory Health",
+                "",
+            ]
+        )
+        if preflight:
+            lines.append(
+                f"- **Pre-Flight Check:** `accel={preflight.get('accel', '-')}`, "
+                f"`requested_guest_ram={preflight.get('requested_guest_ram_mb', '-')} MB`, "
+                f"`free_host_ram={preflight.get('free_host_ram_mb', '-')} MB / {preflight.get('total_host_ram_mb', '-')} MB`"
+            )
+            if preflight.get("ram_warning"):
+                lines.append(f"- **RAM Warning:** {preflight['ram_warning']}")
+        if ram_bench:
+            lines.append(
+                f"- **Measured Host QEMU RAM:** `WorkingSet={ram_bench.get('total_working_set_mb', '-')} MB`, "
+                f"`Private={ram_bench.get('total_private_mb', '-')} MB` across `{ram_bench.get('process_count', 0)}` QEMU process(es)"
+            )
+        if mem_health:
+            lines.append(
+                f"- **Logcat OOM / LMK Status:** `any_memory_issue={mem_health.get('any_memory_issue', False)}` "
+                f"(OOM=`{mem_health.get('total_oom_errors', 0)}`, LMK kills=`{mem_health.get('total_lmk_kills', 0)}`)"
+            )
+        if qemu_by_avd or mem_devices:
+            lines.extend(
+                [
+                    "",
+                    "| AVD / Serial | Image Tag | QEMU RAM / Guest Total | Host WS / Private | Snapshot | Logcat OOM / LMK |",
+                    "| --- | --- | --- | --- | --- | --- |",
+                ]
+            )
+            for dev in snapshot.get("devices", []):
+                serial = str(dev.get("serial", "-"))
+                avd = str(dev.get("avd", "-"))
+                q = qemu_by_avd.get(avd, {})
+                p = proc_by_serial.get(serial, {})
+                m = mem_devices.get(serial, {})
+                q_ram = q.get("qemu_ram_mb") or q.get("config_ram_mb", "-")
+                g_mem = q.get("guest_memtotal_mb")
+                ram_col = f"{q_ram} MB / {g_mem} MB" if g_mem is not None else f"{q_ram} MB"
+                host_col = (
+                    f"{p.get('working_set_mb', '-')} MB / {p.get('private_mb', '-')} MB"
+                    if p
+                    else "-"
+                )
+                snap_str = "clean_ready" if q.get("has_clean_snapshot") else "cold"
+                oom_str = f"OOM={m.get('oom_error_count', 0)}, LMK={m.get('lmk_kill_count', 0)}"
+                lines.append(
+                    f"| `{avd}` (`{serial}`) | `{q.get('tag_id', '-')}` | `{ram_col}` | `{host_col}` | `{snap_str}` | `{oom_str}` |"
+                )
 
     lines.extend(
         [
