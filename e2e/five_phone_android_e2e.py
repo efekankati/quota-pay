@@ -52,6 +52,7 @@ from scripts.android_emulator_fleet import (  # noqa: E402
     DEFAULT_GUEST_RAM_MB,
     DEFAULT_PHONE_SLOTS,
     PhoneSlot,
+    VISIBLE_GUEST_RAM_MB,
     build_phone_slots,
     list_connected_emulators,
     run_cmd,
@@ -633,7 +634,7 @@ def run_e2e(
     ui_port: int = 8765,
     ui_keep_open: bool = False,
     json_mode: bool = False,
-    guest_ram_mb: int = DEFAULT_GUEST_RAM_MB,
+    guest_ram_mb: Optional[int] = None,
     boot_batch_size: int = DEFAULT_BOOT_BATCH_SIZE,
     no_snapshot: bool = False,
     keep_alive: bool = False,
@@ -641,7 +642,13 @@ def run_e2e(
     guest_gpu: str = "swiftshader_indirect",
 ) -> Dict[str, Any]:
     validate_guest_config(num_guests, headless_guests)
-    slots = build_phone_slots(num_guests)
+    resolved_guest_ram = (
+        guest_ram_mb
+        if guest_ram_mb is not None
+        else (DEFAULT_GUEST_RAM_MB if headless_guests else VISIBLE_GUEST_RAM_MB)
+    )
+    guest_ram_mb = resolved_guest_ram
+    slots = build_phone_slots(num_guests, headless_guests=headless_guests)
     active_guest_names = list(ALL_GUEST_NAMES[:num_guests])
     total_diners = 1 + num_guests
     expected_coperto_cents = int(round(COPERTO_PER_PERSON_EUR * 100)) * total_diners
@@ -1476,7 +1483,12 @@ def main() -> int:
     mode_group.add_argument("--headless-guests", dest="headless_guests", action="store_true")
     mode_group.add_argument("--show-all-windows", "--all-windows", dest="headless_guests", action="store_false")
     parser.set_defaults(headless_guests=True)
-    parser.add_argument("--guest-ram-mb", type=int, default=DEFAULT_GUEST_RAM_MB, help="Guest AVD RAM in MB (512-4096)")
+    parser.add_argument(
+        "--guest-ram-mb",
+        type=int,
+        default=None,
+        help="Guest AVD RAM in MB (512-4096; default: 1024 headless, 1536 visible)",
+    )
     parser.add_argument("--boot-batch-size", type=int, default=DEFAULT_BOOT_BATCH_SIZE, help="Emulators to boot per batch (1-10)")
     parser.add_argument("--prepare-snapshots", action="store_true", help="Pre-warm clean_ready snapshots and exit")
     parser.add_argument("--no-snapshot", action="store_true", help="Force cold boot without clean_ready snapshots")
@@ -1527,9 +1539,14 @@ def main() -> int:
             flush=True,
         )
         raise SystemExit(2)
-    if args.guest_ram_mb < 512 or args.guest_ram_mb > 4096:
+    resolved_guest_ram = (
+        args.guest_ram_mb
+        if args.guest_ram_mb is not None
+        else (DEFAULT_GUEST_RAM_MB if args.headless_guests else VISIBLE_GUEST_RAM_MB)
+    )
+    if resolved_guest_ram < 512 or resolved_guest_ram > 4096:
         print(
-            f"ERROR: Invalid --guest-ram-mb ({args.guest_ram_mb}). Must be between 512 and 4096.",
+            f"ERROR: Invalid --guest-ram-mb ({resolved_guest_ram}). Must be between 512 and 4096.",
             file=sys.stderr,
             flush=True,
         )
@@ -1547,12 +1564,12 @@ def main() -> int:
         apk = PROJECT_ROOT / apk
 
     if args.prepare_snapshots:
-        slots = build_phone_slots(args.guests)
+        slots = build_phone_slots(args.guests, headless_guests=args.headless_guests)
         fleet = AndroidEmulatorFleet(
             project_root=PROJECT_ROOT,
             slots=slots,
             headless_guests=args.headless_guests,
-            guest_ram_mb=args.guest_ram_mb,
+            guest_ram_mb=resolved_guest_ram,
             boot_batch_size=args.boot_batch_size,
             guest_gpu_mode=args.guest_gpu,
         )
@@ -1571,7 +1588,7 @@ def main() -> int:
         ui_port=args.ui_port,
         ui_keep_open=args.ui_keep_open,
         json_mode=args.json,
-        guest_ram_mb=args.guest_ram_mb,
+        guest_ram_mb=resolved_guest_ram,
         boot_batch_size=args.boot_batch_size,
         no_snapshot=args.no_snapshot,
         keep_alive=args.keep_alive,

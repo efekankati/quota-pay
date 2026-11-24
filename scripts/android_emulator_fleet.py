@@ -44,6 +44,7 @@ ORGANIZER_RAM_MB = 1536
 ORGANIZER_HEAP_MB = 256
 ORGANIZER_CORES = 2
 DEFAULT_GUEST_RAM_MB = 1024
+VISIBLE_GUEST_RAM_MB = 1536
 GUEST_HEAP_MB = 192
 GUEST_CORES = 2
 DEFAULT_BOOT_BATCH_SIZE = 2
@@ -76,13 +77,28 @@ ALL_PHONE_SLOTS: List[PhoneSlot] = [
 DEFAULT_PHONE_SLOTS: List[PhoneSlot] = ALL_PHONE_SLOTS[:5]
 
 
-def build_phone_slots(num_guests: int) -> List[PhoneSlot]:
+def build_phone_slots(num_guests: int, *, headless_guests: bool = True) -> List[PhoneSlot]:
     """Return [Organizer] + N guest slots (1 <= num_guests <= 9)."""
     if num_guests < 1 or num_guests > len(ALL_PHONE_SLOTS) - 1:
         raise ValueError(
             f"num_guests must be between 1 and {len(ALL_PHONE_SLOTS) - 1}, got {num_guests}"
         )
-    return list(ALL_PHONE_SLOTS[: 1 + num_guests])
+    if headless_guests:
+        return list(ALL_PHONE_SLOTS[: 1 + num_guests])
+    slots: List[PhoneSlot] = [ALL_PHONE_SLOTS[0]]
+    for slot in ALL_PHONE_SLOTS[1 : 1 + num_guests]:
+        slots.append(
+            PhoneSlot(
+                index=slot.index,
+                role=slot.role,
+                avd=f"{slot.avd}_Visible",
+                port=slot.port,
+                serial=slot.serial,
+                proxy_port=slot.proxy_port,
+                guest_name=slot.guest_name,
+            )
+        )
+    return slots
 
 
 def resolve_android_sdk() -> Path:
@@ -320,14 +336,16 @@ def ensure_isolated_avds(
     cores: int = ORGANIZER_CORES,
     ram_by_avd: Optional[Dict[str, int]] = None,
     cores_by_avd: Optional[Dict[str, int]] = None,
+    headless_guests: bool = True,
     fresh: bool = False,
     wipe_snapshots: bool = False,
 ) -> List[str]:
     """Ensure Quota_Phone_1..N exist with lean image-split profiles & strict RAM clamping.
 
-    Organizer (index 1) uses `android-33/default/x86_64`; headless Guests (index 2+) use
-    `android-33/aosp_atd/x86_64`. Any system-image change or hardware/RAM mismatch invalidates
-    stale snapshots/userdata cleanly so Quick Boot never hangs or restores bloated RAM.
+    Organizer (index 1) and visible guests (when `headless_guests=False` or `*_Visible`)
+    use `android-33/default/x86_64`; headless Guests (index 2+) use `android-33/aosp_atd/x86_64`.
+    Any system-image change or hardware/RAM mismatch invalidates stale snapshots/userdata cleanly
+    so Quick Boot never hangs or restores bloated RAM.
     """
     sdk_root = sdk if sdk is not None else resolve_android_sdk()
     target_avd_dir = avd_dir if avd_dir is not None else resolve_avd_dir()
@@ -336,11 +354,13 @@ def ensure_isolated_avds(
     ensured: List[str] = []
     for slot in slots:
         is_organizer = slot.index == 1 or slot.role == "organizer"
-        if is_organizer:
+        use_default_image = is_organizer or (not headless_guests) or slot.avd.endswith("_Visible")
+        if use_default_image:
             sysdir_rel = ORGANIZER_SYSIMAGE_REL
             tag_id = "default"
             tag_display = "Default Android System Image"
-            slot_ram = int(ram_by_avd.get(slot.avd, ram_mb) if ram_by_avd else ram_mb)
+            default_slot_ram = ram_mb if is_organizer else guest_ram_mb
+            slot_ram = int(ram_by_avd.get(slot.avd, default_slot_ram) if ram_by_avd else default_slot_ram)
             slot_heap = ORGANIZER_HEAP_MB
         else:
             sysdir_rel = GUEST_SYSIMAGE_REL
@@ -801,7 +821,11 @@ class AndroidEmulatorFleet:
         self.metro_port = metro_port
         self.headless_guests = headless_guests
         self.ram_mb = ram_mb if ram_mb is not None else ORGANIZER_RAM_MB
-        self.guest_ram_mb = guest_ram_mb if guest_ram_mb is not None else DEFAULT_GUEST_RAM_MB
+        self.guest_ram_mb = (
+            guest_ram_mb
+            if guest_ram_mb is not None
+            else (DEFAULT_GUEST_RAM_MB if headless_guests else VISIBLE_GUEST_RAM_MB)
+        )
         self.cores = cores if cores is not None else ORGANIZER_CORES
         self.boot_batch_size = max(1, int(boot_batch_size))
         self.guest_gpu_mode = guest_gpu_mode
@@ -943,6 +967,7 @@ class AndroidEmulatorFleet:
             cores=self.cores,
             ram_by_avd=ram_by_avd,
             cores_by_avd=cores_by_avd,
+            headless_guests=self.headless_guests,
             fresh=fresh,
             wipe_snapshots=wipe_snapshots,
         )
@@ -1268,11 +1293,11 @@ class AndroidEmulatorFleet:
                     try:
                         self.wait_for_boot(target_slot, min(45.0, resolved_boot_timeout))
                         return
-                    except TimeoutError:
+                    except (TimeoutError, RuntimeError) as exc:
                         self._log(
                             target_slot.serial,
                             "snapshot_fallback_cold",
-                            f"snapshot '{snapshot_name}' did not come online in 45s; falling back to cold boot",
+                            f"snapshot '{snapshot_name}' failed to restore ({exc}); falling back to cold boot",
                         )
                         self._wait_for_slots_shutdown([target_slot])
                         self._launch_single_emulator(target_slot, snapshot_mode="cold")
@@ -1352,9 +1377,29 @@ class AndroidEmulatorFleet:
 
         eff_batch = max(1, int(batch_size if batch_size is not None else self.boot_batch_size))
         batches = chunk_slots(self.slots, eff_batch)
+        avd_root = resolve_avd_dir()
 
         try:
             for b_idx, batch in enumerate(batches, start=1):
+                fresh_slots = [
+                    s for s in batch if not (avd_root / f"{s.avd}.avd" / "userdata-qemu.img").exists()
+                ]
+                if fresh_slots:
+                    self._log(
+                        "host",
+                        "snapshot_userdata_init",
+                        f"initializing fresh userdata once before snapshot save: {', '.join(s.avd for s in fresh_slots)}",
+                    )
+                    for i, slot in enumerate(fresh_slots):
+                        if i > 0:
+                            time.sleep(1.5)
+                        self._launch_single_emulator(slot, snapshot_mode="prepare")
+                    with ThreadPoolExecutor(max_workers=len(fresh_slots)) as pool:
+                        futs = [pool.submit(self.wait_for_boot, slot, 240.0) for slot in fresh_slots]
+                        for f in as_completed(futs):
+                            f.result()
+                    self._wait_for_slots_shutdown(fresh_slots)
+
                 self._log(
                     "host",
                     "snapshot_batch_start",
@@ -1727,7 +1772,12 @@ def main() -> int:
     parser.add_argument("action", choices=["ensure-avds", "prepare-snapshots", "up", "down", "status", "preflight"])
     parser.add_argument("--count", type=int, default=5, help=ALL_PHONE_SLOTS_TOTAL_HELP)
     parser.add_argument("--headless-guests", action="store_true", help="Pass -no-window to guest emulators")
-    parser.add_argument("--guest-ram-mb", type=int, default=DEFAULT_GUEST_RAM_MB, help="Guest RAM in MB (default: 1024)")
+    parser.add_argument(
+        "--guest-ram-mb",
+        type=int,
+        default=None,
+        help="Guest RAM in MB (default: 1024 headless, 1536 visible)",
+    )
     parser.add_argument("--boot-batch-size", type=int, default=DEFAULT_BOOT_BATCH_SIZE, help="Emulators to boot per batch (default: 2)")
     parser.add_argument("--prepare-snapshots", action="store_true", help="Prepare clean_ready snapshots during action")
     parser.add_argument("--no-snapshot", action="store_true", help="Force cold boot without clean_ready snapshots")
@@ -1745,7 +1795,12 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
-    slots = list(ALL_PHONE_SLOTS[: max(1, min(len(ALL_PHONE_SLOTS), args.count))])
+    clamped_count = max(1, min(len(ALL_PHONE_SLOTS), args.count))
+    slots = (
+        [ALL_PHONE_SLOTS[0]]
+        if clamped_count == 1
+        else build_phone_slots(clamped_count - 1, headless_guests=args.headless_guests)
+    )
     fleet = AndroidEmulatorFleet(
         project_root=project_root,
         slots=slots,

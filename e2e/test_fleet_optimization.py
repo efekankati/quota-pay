@@ -20,8 +20,10 @@ from scripts.android_emulator_fleet import (  # noqa: E402
     ORGANIZER_HEAP_MB,
     ORGANIZER_RAM_MB,
     ORGANIZER_SYSIMAGE_REL,
+    VISIBLE_GUEST_RAM_MB,
     AndroidEmulatorFleet,
     _parse_ini_kv,
+    build_phone_slots,
     chunk_slots,
     ensure_isolated_avds,
     scan_logcat_lines_for_oom,
@@ -245,6 +247,80 @@ class FleetOptimizationTests(unittest.TestCase):
                 self.assertIn("-no-window", guest_cmd)
                 self.assertEqual(guest_cmd[guest_cmd.index("-memory") + 1], "1024")
                 self.assertEqual(guest_cmd[guest_cmd.index("-gpu") + 1], "swiftshader_indirect")
+
+    def test_visible_guests_use_default_image_and_preserve_headless_snapshots(self) -> None:
+        visible_slots = build_phone_slots(3, headless_guests=False)
+        self.assertEqual(
+            [s.avd for s in visible_slots],
+            ["Quota_Phone_1", "Quota_Phone_2_Visible", "Quota_Phone_3_Visible", "Quota_Phone_4_Visible"],
+        )
+        self.assertEqual(
+            [s.avd for s in build_phone_slots(3, headless_guests=True)],
+            ["Quota_Phone_1", "Quota_Phone_2", "Quota_Phone_3", "Quota_Phone_4"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sdk = _create_fake_sdk(root)
+            avd_dir = root / "avds"
+
+            # First provision headless ATD guests + clean_ready snapshots
+            headless_slots = build_phone_slots(3, headless_guests=True)
+            ensure_isolated_avds(
+                sdk / "emulator" / "emulator.exe",
+                headless_slots,
+                sdk=sdk,
+                avd_dir=avd_dir,
+                guest_ram_mb=1024,
+                headless_guests=True,
+            )
+            preserved_snaps = []
+            for s in headless_slots[1:]:
+                snap_pb = avd_dir / f"{s.avd}.avd" / "snapshots" / "clean_ready" / "snapshot.pb"
+                snap_pb.parent.mkdir(parents=True, exist_ok=True)
+                snap_pb.write_bytes(b"atd-snap")
+                preserved_snaps.append(snap_pb)
+
+            # Now provision visible guests (all windows shown)
+            ensured_vis = ensure_isolated_avds(
+                sdk / "emulator" / "emulator.exe",
+                visible_slots,
+                sdk=sdk,
+                avd_dir=avd_dir,
+                guest_ram_mb=VISIBLE_GUEST_RAM_MB,
+                headless_guests=False,
+            )
+            self.assertEqual(
+                ensured_vis,
+                ["Quota_Phone_1", "Quota_Phone_2_Visible", "Quota_Phone_3_Visible", "Quota_Phone_4_Visible"],
+            )
+
+            for avd_name in ensured_vis:
+                cfg = _parse_ini_kv(avd_dir / f"{avd_name}.avd" / "config.ini")
+                self.assertEqual(cfg["hw.ramSize"], "1536")
+                self.assertEqual(cfg["vm.heapSize"], str(ORGANIZER_HEAP_MB))
+                self.assertEqual(cfg["tag.id"], "default")
+                self.assertIn("android-33\\default\\x86_64", cfg["image.sysdir.1"])
+
+            # Verify headless ATD configs & snapshots were left completely untouched
+            for s, snap_pb in zip(headless_slots[1:], preserved_snaps):
+                self.assertTrue(snap_pb.exists())
+                atd_cfg = _parse_ini_kv(avd_dir / f"{s.avd}.avd" / "config.ini")
+                self.assertEqual(atd_cfg["hw.ramSize"], "1024")
+                self.assertEqual(atd_cfg["tag.id"], "aosp_atd")
+
+            with mock.patch("scripts.android_emulator_fleet.resolve_android_sdk", return_value=sdk), mock.patch(
+                "scripts.android_emulator_fleet.resolve_adb_exe", return_value=sdk / "platform-tools" / "adb.exe"
+            ), mock.patch(
+                "scripts.android_emulator_fleet.resolve_emulator_exe", return_value=sdk / "emulator" / "emulator.exe"
+            ):
+                vis_fleet = AndroidEmulatorFleet(
+                    PROJECT_ROOT,
+                    slots=visible_slots,
+                    headless_guests=False,
+                    quiet_stdout=True,
+                )
+                self.assertEqual(vis_fleet.guest_ram_mb, VISIBLE_GUEST_RAM_MB)
 
 
 if __name__ == "__main__":

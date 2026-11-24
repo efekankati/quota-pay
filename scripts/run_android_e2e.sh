@@ -41,7 +41,7 @@ Options:
       --headless-guests   Run guests headless with Organizer window visible (default; 1-9 guests)
       --show-all-windows  Show all emulator windows (alias: --all-windows; 1-3 guests)
       --all-windows       Alias for --show-all-windows
-      --guest-ram-mb <MB> Guest RAM override in MB (512-4096; default: 1024)
+      --guest-ram-mb <MB> Guest RAM override in MB (512-4096; default: 1024 headless, 1536 visible)
       --boot-batch-size <N> Concurrent emulators to boot per batch (1-10; default: 2)
       --prepare-snapshots Boot AVDs, install APK cleanly, save 'clean_ready' snapshots, and exit
       --no-snapshot       Bypass 'clean_ready' snapshots and force cold boot
