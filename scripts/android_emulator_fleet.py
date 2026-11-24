@@ -26,7 +26,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 
 PACKAGE_NAME = "eu.quota.app"
@@ -555,6 +555,8 @@ class AndroidEmulatorFleet:
         headless_guests: bool = True,
         ram_mb: Optional[int] = None,
         cores: Optional[int] = None,
+        on_event: Optional[Callable[[str, str, str], None]] = None,
+        quiet_stdout: bool = False,
     ) -> None:
         self.project_root = Path(project_root)
         self.slots = slots if slots is not None else list(DEFAULT_PHONE_SLOTS)
@@ -564,6 +566,8 @@ class AndroidEmulatorFleet:
         self._explicit_cores = cores is not None
         self.ram_mb = ram_mb if ram_mb is not None else 1536
         self.cores = cores if cores is not None else 2
+        self._on_event = on_event
+        self._quiet_stdout = quiet_stdout
 
         self.sdk = resolve_android_sdk()
         self.adb_exe = resolve_adb_exe(self.sdk)
@@ -593,7 +597,13 @@ class AndroidEmulatorFleet:
     def _log(self, serial: str, event: str, detail: str) -> None:
         with self._events_lock:
             self.events.append(FleetLogRecord(serial=serial, event=event, detail=detail))
-        print(f"[fleet][{serial}] {event}: {detail}", flush=True)
+        if self._on_event is not None:
+            try:
+                self._on_event(serial, event, detail)
+            except Exception:
+                pass
+        if not self._quiet_stdout:
+            print(f"[fleet][{serial}] {event}: {detail}", flush=True)
 
     def kill_existing_emulators(self) -> None:
         running = list_connected_emulators(self.adb_exe)
@@ -850,15 +860,16 @@ class AndroidEmulatorFleet:
                 f"Verified SharedPreferences on {slot.serial} missing localhost:{slot.proxy_port}: {verify.stdout!r}"
             )
 
-    def launch_emulators(self, stagger_s: Optional[float] = None, boot_timeout_s: Optional[float] = None) -> None:
-        resolved_stagger = stagger_s if stagger_s is not None else (4.5 if len(self.slots) > 5 else 3.5)
-        resolved_boot_timeout = boot_timeout_s if boot_timeout_s is not None else (360.0 if len(self.slots) > 5 else 300.0)
+    def prepare_host_infrastructure(self) -> None:
         run_cmd([str(self.adb_exe), "start-server"], timeout=20, check=True)
         self.kill_existing_emulators()
         self.ensure_avds()
         self.start_metro()
         self.start_proxies()
 
+    def boot_emulators(self, stagger_s: Optional[float] = None, boot_timeout_s: Optional[float] = None) -> None:
+        resolved_stagger = stagger_s if stagger_s is not None else (4.5 if len(self.slots) > 5 else 3.5)
+        resolved_boot_timeout = boot_timeout_s if boot_timeout_s is not None else (360.0 if len(self.slots) > 5 else 300.0)
         for i, slot in enumerate(self.slots):
             if i > 0:
                 time.sleep(resolved_stagger)
@@ -868,6 +879,10 @@ class AndroidEmulatorFleet:
             futs = {pool.submit(self.wait_for_boot, slot, resolved_boot_timeout): slot for slot in self.slots}
             for fut in as_completed(futs):
                 fut.result()
+
+    def launch_emulators(self, stagger_s: Optional[float] = None, boot_timeout_s: Optional[float] = None) -> None:
+        self.prepare_host_infrastructure()
+        self.boot_emulators(stagger_s=stagger_s, boot_timeout_s=boot_timeout_s)
 
     def install_and_prepare_app(self, apk_path: Path, clear_data: bool = True) -> None:
         apk_path = Path(apk_path)
@@ -980,7 +995,7 @@ class AndroidEmulatorFleet:
         if self._is_shut_down:
             return
         self._is_shut_down = True
-        print("\n[fleet] Shutting down all emulators, proxies, and Metro...", flush=True)
+        self._log("host", "shutdown_start", "Shutting down all emulators, proxies, and Metro...")
 
         running = list_connected_emulators(self.adb_exe)
         for serial in sorted(set(running.keys()) | {s.serial for s in self.slots}):
@@ -1026,7 +1041,7 @@ class AndroidEmulatorFleet:
                         pass
             self._metro_proc = None
 
-        print("[fleet] Shutdown complete.", flush=True)
+        self._log("host", "shutdown_complete", "Shutdown complete.")
 
 
 def main() -> int:

@@ -13,6 +13,11 @@ HEADLESS_GUESTS=1
 SEED=""
 APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
 KEEP_ALIVE_ON_FAIL=0
+ENABLE_UI=0
+UI_PORT=""
+UI_KEEP_OPEN=0
+NO_TUI=0
+JSON_MODE=0
 
 print_usage() {
   cat <<'EOF'
@@ -32,10 +37,15 @@ Options:
       --seed <INT>        Deterministic random seed passed to the E2E runner
       --apk <PATH>        APK path (default: android/app/build/outputs/apk/debug/app-debug.apk)
       --keep-alive-on-fail Keep emulators running if E2E fails
+      --ui                Start lightweight local SSE live browser dashboard (http://127.0.0.1:8765)
+      --ui-port <PORT>    TCP port for --ui live dashboard (1-65535; default: 8765)
+      --ui-keep-open      Keep --ui live dashboard open after run completes until Ctrl+C
+      --no-tui            Disable Rich live board and print timestamped plain-text steps
+      --json              Emit final structured summary JSON to stdout
   -h, --help              Show this help and exit
 
 Examples:
-  scripts/run_android_e2e.sh --guests 3 --show-all-windows
+  scripts/run_android_e2e.sh --guests 3 --show-all-windows --ui
   scripts/run_android_e2e.sh --guests 9 --headless-guests
 EOF
 }
@@ -122,6 +132,38 @@ while [[ $# -gt 0 ]]; do
       KEEP_ALIVE_ON_FAIL=1
       shift
       ;;
+    --ui)
+      ENABLE_UI=1
+      shift
+      ;;
+    --ui-port)
+      require_value "$1" "$#"
+      UI_PORT="$2"
+      if ! [[ "${UI_PORT}" =~ ^[0-9]+$ ]] || [[ "$((10#${UI_PORT}))" -lt 1 || "$((10#${UI_PORT}))" -gt 65535 ]]; then
+        reject_input "Flag '--ui-port' must be an integer between 1 and 65535, got '${UI_PORT}'."
+      fi
+      shift 2
+      ;;
+    --ui-port=*)
+      UI_PORT="${1#*=}"
+      if [[ -z "${UI_PORT}" ]] || ! [[ "${UI_PORT}" =~ ^[0-9]+$ ]] || [[ "$((10#${UI_PORT}))" -lt 1 || "$((10#${UI_PORT}))" -gt 65535 ]]; then
+        reject_input "Flag '--ui-port' must be an integer between 1 and 65535, got '${UI_PORT}'."
+      fi
+      shift
+      ;;
+    --ui-keep-open)
+      UI_KEEP_OPEN=1
+      ENABLE_UI=1
+      shift
+      ;;
+    --no-tui)
+      NO_TUI=1
+      shift
+      ;;
+    --json)
+      JSON_MODE=1
+      shift
+      ;;
     -*)
       reject_input "Unknown option '$1'. Run with --help for usage."
       ;;
@@ -196,9 +238,26 @@ fi
 if [[ "${KEEP_ALIVE_ON_FAIL}" -eq 1 ]]; then
   PY_ARGS+=(--keep-alive-on-fail)
 fi
+if [[ "${ENABLE_UI}" -eq 1 ]]; then
+  PY_ARGS+=(--ui)
+fi
+if [[ -n "${UI_PORT}" ]]; then
+  PY_ARGS+=(--ui-port "$((10#${UI_PORT}))")
+fi
+if [[ "${UI_KEEP_OPEN}" -eq 1 ]]; then
+  PY_ARGS+=(--ui-keep-open)
+fi
+if [[ "${NO_TUI}" -eq 1 ]]; then
+  PY_ARGS+=(--no-tui)
+fi
+if [[ "${JSON_MODE}" -eq 1 ]]; then
+  PY_ARGS+=(--json)
+fi
 
-echo "[run_android_e2e] Starting E2E run: 1 Organizer + ${GUESTS_INT} Guest(s) | Mode: ${MODE_DESC}"
-echo "[run_android_e2e] APK: ${RESOLVED_APK}"
+if [[ "${JSON_MODE}" -eq 0 ]]; then
+  echo "[run_android_e2e] Starting E2E run: 1 Organizer + ${GUESTS_INT} Guest(s) | Mode: ${MODE_DESC}"
+  echo "[run_android_e2e] APK: ${RESOLVED_APK}"
+fi
 
 cd "${REPO_ROOT}"
 exec "${PYTHON_CMD[@]}" "${PY_ARGS[@]}"
