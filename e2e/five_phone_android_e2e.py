@@ -508,15 +508,29 @@ def organizer_create_manual_bill(
         time.sleep(0.2)
 
     org.tap("manual-item-chip-0-0")
-    time.sleep(0.3)
 
     footer_total = org.get_node_text("manual-footer-total")
     footer_cents = _parse_euro_cents(footer_total)
     assert footer_cents == expected_grand_total_cents, (
         f"Expected organizer footer total {expected_grand_total_cents}c, got {footer_total}"
     )
-    footer_org = org.get_node_text("manual-footer-organizer-share")
-    assert _parse_euro_cents(footer_org) == 1600, f"Expected organizer share EUR 16.00 (13.50+2.50), got {footer_org}"
+    footer_org = ""
+    org_deadline = time.time() + 5.0
+    while time.time() < org_deadline:
+        footer_org = org.get_node_text("manual-footer-organizer-share")
+        if _parse_euro_cents(footer_org) == 1600:
+            break
+        time.sleep(0.3)
+    if _parse_euro_cents(footer_org) != 1600:
+        diag = org.eval_js(
+            "(() => { const s = globalThis.__QUOTA_BILL_STORE__?.getState(); "
+            "const b = s?.bills?.find(x => x.id === s.activeBillId) || s?.bills?.[0]; "
+            "return JSON.stringify((b?.items || []).filter(i => !i.isCoperto).map((i, idx) => "
+            "({ idx, name: i.name, total: i.totalPrice, assigned: i.assignedParticipantIds?.length || 0 }))); })()"
+        )
+        raise AssertionError(
+            f"Expected organizer share EUR 16.00 (13.50+2.50), got {footer_org}; item_assignments={diag}"
+        )
 
     # Verify QR share modal opens/closes cleanly and publish bill to Supabase
     org.tap("manual-qr-btn")
@@ -526,7 +540,7 @@ def organizer_create_manual_bill(
     time.sleep(0.3)
 
     org.tap("manual-generate-share-btn")
-    org.wait_for_testid("summary-collected-text", timeout_s=30)
+    org.wait_for_testid("summary-collected-text", timeout_s=45)
 
     bill_id = org.eval_js(
         "JSON.stringify(globalThis.__QUOTA_BILL_STORE__?.getState()?.activeBillId || '')"

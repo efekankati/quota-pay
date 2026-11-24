@@ -8,10 +8,36 @@ class BillSyncServiceImpl {
   private splitListeners: Map<string, Set<(split: any) => void>> = new Map();
   private splitChannels: Map<string, any> = new Map();
   private inFlightFetches: Map<string, Promise<BillSession | null>> = new Map();
-  private saveQueues: Map<string, Promise<void>> = new Map();
+  private localSaveGen: Map<string, number> = new Map();
+  private pendingSavePayloads: Map<
+    string,
+    { bill: BillSession; actorParticipantId?: string; gen: number }
+  > = new Map();
+  private activeSaveLoops: Map<string, Promise<void>> = new Map();
+  private recentlyWrittenPayloads: Map<string, string[]> = new Map();
   private inFlightActors: Map<string, { actorId: string; billSnapshot: BillSession }> = new Map();
   private lastLocalMutationAt: Map<string, number> = new Map();
   private isChannelReady = false;
+
+  private recordWrittenPayload(billId: string, payloadStr: string): void {
+    if (!billId || !payloadStr) return;
+    const list = this.recentlyWrittenPayloads.get(billId) || [];
+    list.push(payloadStr);
+    if (list.length > 24) {
+      list.splice(0, list.length - 24);
+    }
+    this.recentlyWrittenPayloads.set(billId, list);
+  }
+
+  private isOwnWrittenPayload(billId: string, payloadStr: string): boolean {
+    if (!billId || !payloadStr) return false;
+    const list = this.recentlyWrittenPayloads.get(billId);
+    return Boolean(list && list.includes(payloadStr));
+  }
+
+  public hasPendingLocalSave(billId: string): boolean {
+    return this.activeSaveLoops.has(billId) || this.pendingSavePayloads.has(billId);
+  }
 
   /**
    * Preserves in-flight local actor claims if an older cloud snapshot arrives before CAS/retry converges.
@@ -292,6 +318,9 @@ class BillSyncServiceImpl {
         .on('broadcast', { event: 'bill_updated' }, (payload: any) => {
           if (payload?.payload?.bill) {
             const bill: BillSession = payload.payload.bill;
+            if (bill?.id && this.hasPendingLocalSave(bill.id)) {
+              return;
+            }
             this.notifyListeners(bill);
           }
         })
@@ -311,6 +340,13 @@ class BillSyncServiceImpl {
                 const parsed = JSON.parse(row.title);
                 if (parsed?.bill) {
                   const incoming = parsed.bill as BillSession;
+                  if (
+                    incoming?.id &&
+                    (this.isOwnWrittenPayload(incoming.id, row.title) ||
+                      this.hasPendingLocalSave(incoming.id))
+                  ) {
+                    return;
+                  }
                   this.notifyListeners(incoming);
                 }
               }
@@ -337,46 +373,68 @@ class BillSyncServiceImpl {
   ): Promise<void> {
     if (!bill || !bill.id) return;
     this.lastLocalMutationAt.set(bill.id, Date.now());
-    if (actorParticipantId) {
-      this.inFlightActors.set(bill.id, {
-        actorId: actorParticipantId,
-        billSnapshot: bill,
-      });
-    }
 
-    // Persist & merge atomically in Supabase first, then broadcast the canonical merged snapshot
-    // so concurrent tabs never twitch between unmerged and merged states.
+    // Persist & merge atomically in Supabase first (coalescing rapid local taps),
+    // then broadcast the canonical merged snapshot once the local queue drains.
     this.saveBillToCloud(bill, actorParticipantId).catch((err) => {
       console.warn('[BillSync] Cloud save error:', err);
     });
   }
 
   /**
-   * Serializes per-bill writes through a promise queue so rapid local taps never interleave.
+   * Coalesces pending writes per billId through a single drain loop so intermediate taps
+   * never build a stale serial backlog or overwrite newer local mutations.
    */
   public async saveBillToCloud(
     bill: BillSession,
     actorParticipantId?: string
   ): Promise<void> {
     if (!bill || !bill.id) return;
-    if (actorParticipantId) {
-      this.inFlightActors.set(bill.id, {
-        actorId: actorParticipantId,
+    const billId = bill.id;
+    const nextGen = (this.localSaveGen.get(billId) || 0) + 1;
+    this.localSaveGen.set(billId, nextGen);
+
+    const prevPending = this.pendingSavePayloads.get(billId);
+    const effectiveActorId =
+      prevPending && prevPending.actorParticipantId === undefined
+        ? undefined
+        : actorParticipantId;
+
+    this.pendingSavePayloads.set(billId, {
+      bill,
+      actorParticipantId: effectiveActorId,
+      gen: nextGen,
+    });
+
+    if (effectiveActorId) {
+      this.inFlightActors.set(billId, {
+        actorId: effectiveActorId,
         billSnapshot: bill,
       });
+    } else {
+      this.inFlightActors.delete(billId);
     }
-    const prev = this.saveQueues.get(bill.id) || Promise.resolve();
-    const next = prev
-      .catch(() => {})
-      .then(() => this.performSaveBillToCloud(bill, actorParticipantId));
-    this.saveQueues.set(bill.id, next);
-    try {
-      await next;
-    } finally {
-      if (this.saveQueues.get(bill.id) === next) {
-        this.saveQueues.delete(bill.id);
-      }
+
+    let loop = this.activeSaveLoops.get(billId);
+    if (!loop) {
+      let createdLoop: Promise<void> | null = null;
+      createdLoop = (async () => {
+        try {
+          while (this.pendingSavePayloads.has(billId)) {
+            const entry = this.pendingSavePayloads.get(billId)!;
+            this.pendingSavePayloads.delete(billId);
+            await this.performSaveBillToCloud(entry.bill, entry.actorParticipantId, entry.gen);
+          }
+        } finally {
+          if (createdLoop && this.activeSaveLoops.get(billId) === createdLoop) {
+            this.activeSaveLoops.delete(billId);
+          }
+        }
+      })();
+      this.activeSaveLoops.set(billId, createdLoop);
+      loop = createdLoop;
     }
+    await loop;
   }
 
   /**
@@ -385,7 +443,8 @@ class BillSyncServiceImpl {
    */
   private async performSaveBillToCloud(
     bill: BillSession,
-    actorParticipantId?: string
+    actorParticipantId?: string,
+    saveGen?: number
   ): Promise<void> {
     const supabase = getSupabaseClient();
     if (!supabase || !bill || !bill.id) {
@@ -457,6 +516,7 @@ class BillSyncServiceImpl {
           }
           // Atomic optimistic compare-and-swap on `bills.title` so concurrent guests
           // never clobber another diner's claim or payment between read and write.
+          this.recordWrittenPayload(bill.id, payloadStr);
           let casQuery = supabase
             .from('bills')
             .update({
@@ -479,6 +539,7 @@ class BillSyncServiceImpl {
             console.warn('[BillSync] CAS update error after retries:', casError);
           }
         } else {
+          this.recordWrittenPayload(bill.id, payloadStr);
           const { data: inserted } = await supabase
             .from('bills')
             .insert({
@@ -499,22 +560,30 @@ class BillSyncServiceImpl {
       const grandTotal =
         cloudSafeBill.taxSummary?.grandTotal || cloudSafeBill.manualTotalAmount || 0;
 
-      // Always notify local store & broadcast the canonical merged state to all open tabs
+      // Only notify local store & broadcast once this save reflects the latest local mutation
+      const isLatestLocalGen =
+        saveGen === undefined ||
+        (this.localSaveGen.get(bill.id) === saveGen && !this.pendingSavePayloads.has(bill.id));
       if (actorParticipantId) {
         const currentPending = this.inFlightActors.get(bill.id);
-        if (currentPending?.actorId === actorParticipantId && currentPending.billSnapshot === bill) {
+        if (
+          currentPending?.actorId === actorParticipantId &&
+          (currentPending.billSnapshot === bill || isLatestLocalGen)
+        ) {
           this.inFlightActors.delete(bill.id);
         }
       }
-      this.notifyListeners(mergedBill);
-      if (this.channel && this.isChannelReady) {
-        try {
-          await this.channel.send({
-            type: 'broadcast',
-            event: 'bill_updated',
-            payload: { bill: cloudSafeBill },
-          });
-        } catch {}
+      if (isLatestLocalGen) {
+        this.notifyListeners(mergedBill);
+        if (this.channel && this.isChannelReady) {
+          try {
+            await this.channel.send({
+              type: 'broadcast',
+              event: 'bill_updated',
+              payload: { bill: cloudSafeBill },
+            });
+          } catch {}
+        }
       }
 
       // 2. Persist Participant Rows in `bill_splits`
