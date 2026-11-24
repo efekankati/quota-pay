@@ -45,13 +45,29 @@ class PhoneSlot:
     guest_name: Optional[str] = None
 
 
-DEFAULT_PHONE_SLOTS: List[PhoneSlot] = [
+ALL_PHONE_SLOTS: List[PhoneSlot] = [
     PhoneSlot(1, "organizer", "Quota_Phone_1", 5554, "emulator-5554", 8091, None),
     PhoneSlot(2, "guest", "Quota_Phone_2", 5556, "emulator-5556", 8092, "Marco"),
     PhoneSlot(3, "guest", "Quota_Phone_3", 5558, "emulator-5558", 8093, "Sara"),
     PhoneSlot(4, "guest", "Quota_Phone_4", 5560, "emulator-5560", 8094, "Elena"),
     PhoneSlot(5, "guest", "Quota_Phone_5", 5562, "emulator-5562", 8095, "Davide"),
+    PhoneSlot(6, "guest", "Quota_Phone_6", 5564, "emulator-5564", 8096, "Giulia"),
+    PhoneSlot(7, "guest", "Quota_Phone_7", 5566, "emulator-5566", 8097, "Luca"),
+    PhoneSlot(8, "guest", "Quota_Phone_8", 5568, "emulator-5568", 8098, "Chiara"),
+    PhoneSlot(9, "guest", "Quota_Phone_9", 5570, "emulator-5570", 8099, "Matteo"),
+    PhoneSlot(10, "guest", "Quota_Phone_10", 5572, "emulator-5572", 8100, "Sofia"),
 ]
+
+DEFAULT_PHONE_SLOTS: List[PhoneSlot] = ALL_PHONE_SLOTS[:5]
+
+
+def build_phone_slots(num_guests: int) -> List[PhoneSlot]:
+    """Return [Organizer] + N guest slots (1 <= num_guests <= 9)."""
+    if num_guests < 1 or num_guests > len(ALL_PHONE_SLOTS) - 1:
+        raise ValueError(
+            f"num_guests must be between 1 and {len(ALL_PHONE_SLOTS) - 1}, got {num_guests}"
+        )
+    return list(ALL_PHONE_SLOTS[: 1 + num_guests])
 
 
 def resolve_android_sdk() -> Path:
@@ -155,6 +171,8 @@ def ensure_isolated_avds(
     *,
     ram_mb: int = 1536,
     cores: int = 2,
+    ram_by_avd: Optional[Dict[str, int]] = None,
+    cores_by_avd: Optional[Dict[str, int]] = None,
     fresh: bool = False,
 ) -> List[str]:
     """Ensure Quota_Phone_1..N exist as isolated lightweight AVDs cloned from base AVD config."""
@@ -195,12 +213,15 @@ def ensure_isolated_avds(
         ) + "\n"
         slot_ini.write_text(ini_content, encoding="utf-8")
 
+        slot_ram = ram_by_avd.get(slot.avd, ram_mb) if ram_by_avd else ram_mb
+        slot_cores = cores_by_avd.get(slot.avd, cores) if cores_by_avd else cores
+
         slot_config = dict(base_config)
         slot_config["AvdId"] = slot.avd
         slot_config["avd.ini.displayname"] = f"Quota Phone {slot.index} ({slot.role})"
         slot_config["avd.ini.encoding"] = "UTF-8"
-        slot_config["hw.ramSize"] = str(ram_mb)
-        slot_config["hw.cpu.ncore"] = str(cores)
+        slot_config["hw.ramSize"] = str(slot_ram)
+        slot_config["hw.cpu.ncore"] = str(slot_cores)
         slot_config["disk.dataPartition.size"] = "2G"
         slot_config["fastboot.forceChosenSnapshotBoot"] = "no"
         slot_config["fastboot.forceColdBoot"] = "no"
@@ -522,6 +543,9 @@ class FleetLogRecord:
     ts: float = field(default_factory=time.time)
 
 
+ALL_PHONE_SLOTS_TOTAL_HELP = "Number of emulators (1..10)"
+
+
 class AndroidEmulatorFleet:
     def __init__(
         self,
@@ -529,15 +553,17 @@ class AndroidEmulatorFleet:
         slots: Optional[List[PhoneSlot]] = None,
         metro_port: int = DEFAULT_METRO_PORT,
         headless_guests: bool = True,
-        ram_mb: int = 1536,
-        cores: int = 2,
+        ram_mb: Optional[int] = None,
+        cores: Optional[int] = None,
     ) -> None:
         self.project_root = Path(project_root)
         self.slots = slots if slots is not None else list(DEFAULT_PHONE_SLOTS)
         self.metro_port = metro_port
         self.headless_guests = headless_guests
-        self.ram_mb = ram_mb
-        self.cores = cores
+        self._explicit_ram = ram_mb is not None
+        self._explicit_cores = cores is not None
+        self.ram_mb = ram_mb if ram_mb is not None else 1536
+        self.cores = cores if cores is not None else 2
 
         self.sdk = resolve_android_sdk()
         self.adb_exe = resolve_adb_exe(self.sdk)
@@ -549,9 +575,20 @@ class AndroidEmulatorFleet:
         self._emu_procs: Dict[str, subprocess.Popen[bytes]] = {}
         self._metro_proc: Optional[subprocess.Popen[bytes]] = None
         self._proxies: Dict[str, DeviceMetroProxy] = {}
+        self._last_launch_url: Dict[str, Optional[str]] = {}
         self.events: List[FleetLogRecord] = []
         self._events_lock = threading.Lock()
         self._is_shut_down = False
+
+    def _slot_ram_mb(self, slot: PhoneSlot) -> int:
+        if len(self.slots) > 5 and not self._explicit_ram and slot.index > 1:
+            return 1024
+        return self.ram_mb
+
+    def _slot_cores(self, slot: PhoneSlot) -> int:
+        if len(self.slots) > 5 and not self._explicit_cores and slot.index > 1:
+            return 1
+        return self.cores
 
     def _log(self, serial: str, event: str, detail: str) -> None:
         with self._events_lock:
@@ -574,11 +611,15 @@ class AndroidEmulatorFleet:
             time.sleep(0.5)
 
     def ensure_avds(self, fresh: bool = False) -> List[str]:
+        ram_by_avd = {slot.avd: self._slot_ram_mb(slot) for slot in self.slots}
+        cores_by_avd = {slot.avd: self._slot_cores(slot) for slot in self.slots}
         ensured = ensure_isolated_avds(
             self.emulator_exe,
             self.slots,
             ram_mb=self.ram_mb,
             cores=self.cores,
+            ram_by_avd=ram_by_avd,
+            cores_by_avd=cores_by_avd,
             fresh=fresh,
         )
         self._log("host", "ensure_avds", f"verified {len(ensured)} AVDs: {', '.join(ensured)}")
@@ -589,7 +630,19 @@ class AndroidEmulatorFleet:
             conn = http.client.HTTPConnection("127.0.0.1", self.metro_port, timeout=2)
             conn.request("GET", "/status")
             resp = conn.getresponse()
-            if resp.status == 200 and b"packager-status:running" in resp.read():
+            body = resp.read()
+            conn.close()
+            if resp.status == 200 and b"packager-status:running" in body:
+                jconn = http.client.HTTPConnection("127.0.0.1", self.metro_port, timeout=2)
+                jconn.request("GET", "/json/list")
+                jresp = jconn.getresponse()
+                jresp.read()
+                jconn.close()
+                if jresp.status != 200:
+                    raise RuntimeError(
+                        f"Port {self.metro_port} responded to /status without /json/list "
+                        f"(HTTP {jresp.status}; unexpected server on Metro port)"
+                    )
                 self._log("metro", "ready", f"reusing running Metro on port {self.metro_port}")
                 return
         except OSError:
@@ -660,9 +713,9 @@ class AndroidEmulatorFleet:
             "-no-snapshot-save",
             "-no-snapshot-load",
             "-memory",
-            str(self.ram_mb),
+            str(self._slot_ram_mb(slot)),
             "-cores",
-            str(self.cores),
+            str(self._slot_cores(slot)),
             "-netdelay",
             "none",
             "-netspeed",
@@ -684,7 +737,7 @@ class AndroidEmulatorFleet:
         self._log(
             slot.serial,
             "emulator_spawned",
-            f"pid={proc.pid} avd={slot.avd} headless={self.headless_guests and slot.index > 1}",
+            f"pid={proc.pid} avd={slot.avd} ram={self._slot_ram_mb(slot)}MB headless={self.headless_guests and slot.index > 1}",
         )
 
     def wait_for_boot(self, slot: PhoneSlot, timeout_s: float = 300.0) -> None:
@@ -797,7 +850,9 @@ class AndroidEmulatorFleet:
                 f"Verified SharedPreferences on {slot.serial} missing localhost:{slot.proxy_port}: {verify.stdout!r}"
             )
 
-    def launch_emulators(self, stagger_s: float = 3.5, boot_timeout_s: float = 300.0) -> None:
+    def launch_emulators(self, stagger_s: Optional[float] = None, boot_timeout_s: Optional[float] = None) -> None:
+        resolved_stagger = stagger_s if stagger_s is not None else (4.5 if len(self.slots) > 5 else 3.5)
+        resolved_boot_timeout = boot_timeout_s if boot_timeout_s is not None else (360.0 if len(self.slots) > 5 else 300.0)
         run_cmd([str(self.adb_exe), "start-server"], timeout=20, check=True)
         self.kill_existing_emulators()
         self.ensure_avds()
@@ -806,11 +861,11 @@ class AndroidEmulatorFleet:
 
         for i, slot in enumerate(self.slots):
             if i > 0:
-                time.sleep(stagger_s)
+                time.sleep(resolved_stagger)
             self._launch_single_emulator(slot)
 
         with ThreadPoolExecutor(max_workers=len(self.slots)) as pool:
-            futs = {pool.submit(self.wait_for_boot, slot, boot_timeout_s): slot for slot in self.slots}
+            futs = {pool.submit(self.wait_for_boot, slot, resolved_boot_timeout): slot for slot in self.slots}
             for fut in as_completed(futs):
                 fut.result()
 
@@ -837,6 +892,7 @@ class AndroidEmulatorFleet:
                 fut.result()
 
     def launch_app(self, slot: PhoneSlot, deep_link_url: Optional[str] = None) -> None:
+        self._last_launch_url[slot.serial] = deep_link_url
         self._configure_app_debug_host(slot)
         if deep_link_url:
             cmd = [
@@ -868,9 +924,14 @@ class AndroidEmulatorFleet:
         run_cmd(cmd, timeout=30, check=True)
         self._log(slot.serial, "app_launched", deep_link_url or MAIN_ACTIVITY)
 
-    def wait_for_inspector_target(self, slot: PhoneSlot, timeout_s: float = 90.0) -> dict:
-        deadline = time.time() + timeout_s
+    def wait_for_inspector_target(self, slot: PhoneSlot, timeout_s: float = 120.0) -> dict:
+        started = time.time()
+        deadline = started + timeout_s
         last_err = ""
+        logged_diag = False
+        retried_launch = False
+        proxy = self._proxies.get(slot.serial)
+
         while time.time() < deadline:
             try:
                 conn = http.client.HTTPConnection("127.0.0.1", slot.proxy_port, timeout=5)
@@ -885,8 +946,35 @@ class AndroidEmulatorFleet:
                         return targets[0]
             except Exception as exc:
                 last_err = str(exc)
+
+            elapsed = time.time() - started
+            if not logged_diag and elapsed >= 35.0:
+                logged_diag = True
+                if proxy:
+                    self._log(
+                        slot.serial,
+                        "inspector_diag",
+                        f"elapsed={elapsed:.1f}s http_requests={proxy.http_requests} ws_connections={proxy.ws_connections} last_error={proxy.last_error}",
+                    )
+            if not retried_launch and elapsed >= 45.0 and proxy and proxy.http_requests == 0:
+                retried_launch = True
+                self._log(
+                    slot.serial,
+                    "inspector_retry",
+                    f"no proxy HTTP traffic after {elapsed:.1f}s; force-stopping and relaunching {PACKAGE_NAME}",
+                )
+                run_cmd([str(self.adb_exe), "-s", slot.serial, "shell", "am", "force-stop", PACKAGE_NAME], timeout=15, check=False)
+                self.launch_app(slot, deep_link_url=self._last_launch_url.get(slot.serial))
             time.sleep(1.0)
-        raise TimeoutError(f"Inspector target not registered for {slot.serial} on :{slot.proxy_port} ({last_err})")
+
+        diag_detail = (
+            f"http_requests={proxy.http_requests}, ws_connections={proxy.ws_connections}, last_error={proxy.last_error}"
+            if proxy
+            else "no proxy"
+        )
+        raise TimeoutError(
+            f"Inspector target not registered for {slot.serial} on :{slot.proxy_port} ({last_err}; {diag_detail})"
+        )
 
     def shutdown(self) -> None:
         if self._is_shut_down:
@@ -942,17 +1030,17 @@ class AndroidEmulatorFleet:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Quota Pay 5-Phone Android Emulator Fleet Manager")
+    parser = argparse.ArgumentParser(description="Quota Pay Multi-Phone Android Emulator Fleet Manager")
     parser.add_argument("action", choices=["ensure-avds", "up", "down", "status"])
-    parser.add_argument("--count", type=int, default=5, help="Number of emulators (1..5)")
-    parser.add_argument("--headless-guests", action="store_true", help="Pass -no-window to guest emulators (2..5)")
+    parser.add_argument("--count", type=int, default=5, help=ALL_PHONE_SLOTS_TOTAL_HELP)
+    parser.add_argument("--headless-guests", action="store_true", help="Pass -no-window to guest emulators")
     parser.add_argument("--apk", type=str, default="android/app/build/outputs/apk/debug/app-debug.apk")
     parser.add_argument("--fresh-avds", action="store_true")
     parser.add_argument("--hold", action="store_true", help="Keep fleet running until Ctrl+C (then clean shutdown)")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
-    slots = DEFAULT_PHONE_SLOTS[: max(1, min(5, args.count))]
+    slots = list(ALL_PHONE_SLOTS[: max(1, min(len(ALL_PHONE_SLOTS), args.count))])
     fleet = AndroidEmulatorFleet(
         project_root=project_root,
         slots=slots,

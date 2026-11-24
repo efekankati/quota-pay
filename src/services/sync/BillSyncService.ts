@@ -412,10 +412,10 @@ class BillSyncServiceImpl {
         receiptImageUrl: sanitizeReceiptUrlForPersistence(mergedBill.receiptImageUrl),
       };
 
-      const maxAttempts = rowId !== null ? 4 : 1;
+      const maxAttempts = rowId !== null ? 24 : 1;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         if (attempt > 0 && rowId !== null) {
-          const jitterMs = 45 + Math.floor(Math.random() * 100);
+          const jitterMs = 35 + Math.floor(Math.random() * 140);
           await new Promise((resolve) => setTimeout(resolve, jitterMs));
           const { data: freshRows } = await supabase
             .from('bills')
@@ -455,7 +455,9 @@ class BillSyncServiceImpl {
           if (existingTitle === payloadStr) {
             break;
           }
-          await supabase
+          // Atomic optimistic compare-and-swap on `bills.title` so concurrent guests
+          // never clobber another diner's claim or payment between read and write.
+          let casQuery = supabase
             .from('bills')
             .update({
               title: payloadStr,
@@ -464,21 +466,18 @@ class BillSyncServiceImpl {
               currency: cloudSafeBill.currency || 'EUR',
             })
             .eq('id', rowId);
+          if (existingTitle !== null) {
+            casQuery = casQuery.eq('title', existingTitle);
+          }
 
-          if (!actorParticipantId) {
+          const { data: casUpdated, error: casError } = await casQuery.select('id');
+          if (!casError && casUpdated && casUpdated.length > 0) {
             break;
           }
 
-          const { data: verifyRows } = await supabase
-            .from('bills')
-            .select('title')
-            .eq('id', rowId)
-            .limit(1);
-          const readBackTitle = verifyRows && verifyRows.length > 0 ? verifyRows[0].title : null;
-          if (!readBackTitle || readBackTitle === payloadStr) {
-            break;
+          if (casError && attempt === maxAttempts - 1) {
+            console.warn('[BillSync] CAS update error after retries:', casError);
           }
-          existingTitle = readBackTitle;
         } else {
           const { data: inserted } = await supabase
             .from('bills')

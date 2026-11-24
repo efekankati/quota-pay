@@ -1,9 +1,11 @@
-"""5-Phone Local Android Emulator E2E Test for Quota Pay.
+"""Local Multi-Emulator Android E2E Test for Quota Pay.
 
-Runs against 5 concurrent local Android Emulators (`emulator-5554`..`5562`)
-driven via `ANDROID_SERIAL` + `adb -s` + `@expo/agent-cli` runtime commands:
-  - Phone 1 (emulator-5554): Organizer creates a 5-person itemized bill + coperto
-  - Phones 2-5 (emulator-5556..5562): Guests join concurrently via `quota://` deep link,
+Runs against 1 Organizer + N Guests concurrent local Android Emulators
+(up to 9 guests with `--headless-guests` [10 phones total], or up to 3 guests
+with `--show-all-windows` [4 phones total]) driven via `ANDROID_SERIAL` +
+`adb -s` + `@expo/agent-cli` runtime commands:
+  - Phone 1 (emulator-5554): Organizer creates a (1+N)-person itemized bill + coperto
+  - Phones 2..1+N (emulator-5556..): Guests join concurrently via `quota://` deep link,
     verify real-time Supabase item sync, run overlapping conflict tap barriers +
     randomized claims, and settle their shares via Google Pay / SEPA Instant
   - Phone 1 verifies real-time updates, settles Organizer share, and asserts
@@ -38,10 +40,15 @@ from scripts.android_emulator_fleet import (  # noqa: E402
     AndroidEmulatorFleet,
     DEFAULT_PHONE_SLOTS,
     PhoneSlot,
+    build_phone_slots,
     list_connected_emulators,
     run_cmd,
 )
 
+
+MAX_HEADLESS_GUESTS = 9
+MAX_VISIBLE_GUESTS = 3
+ALL_GUEST_NAMES = ["Marco", "Sara", "Elena", "Davide", "Giulia", "Luca", "Chiara", "Matteo", "Sofia"]
 
 RECEIPT_ITEMS_SPEC = [
     {"index": 0, "name": "Rigatoni all'Amatriciana", "unit_price": 13.50, "qty": 1, "owner": "organizer"},
@@ -53,10 +60,30 @@ RECEIPT_ITEMS_SPEC = [
     {"index": 6, "name": "Vino Chianti Classico 1L", "unit_price": 16.00, "qty": 2, "owner": "random"},
 ]
 COPERTO_PER_PERSON_EUR = 2.50
-GUEST_NAMES = ["Marco", "Sara", "Elena", "Davide"]
+GUEST_NAMES = list(ALL_GUEST_NAMES[:4])
 EXPECTED_ITEMS_CENTS = sum(int(round(i["unit_price"] * 100)) * i["qty"] for i in RECEIPT_ITEMS_SPEC)  # 15400
 EXPECTED_COPERTO_CENTS = int(round(COPERTO_PER_PERSON_EUR * 100)) * 5  # 1250
 EXPECTED_GRAND_TOTAL_CENTS = EXPECTED_ITEMS_CENTS + EXPECTED_COPERTO_CENTS  # 16650 (€166.50)
+
+
+def validate_guest_config(num_guests: int, headless_guests: bool) -> None:
+    """Enforce guest-count bounds for headless (1..9) vs visible-window (1..3) runs."""
+    max_allowed = MAX_HEADLESS_GUESTS if headless_guests else MAX_VISIBLE_GUESTS
+    mode_label = "--headless-guests" if headless_guests else "--show-all-windows"
+    if 1 <= num_guests <= max_allowed:
+        return
+    print(
+        (
+            f"ERROR: Invalid guest count ({num_guests}) for {mode_label}.\n"
+            f"Allowed conditions:\n"
+            f"  - With --headless-guests  : 1 to {MAX_HEADLESS_GUESTS} guests (up to {1 + MAX_HEADLESS_GUESTS} emulators total; Organizer visible + headless guests)\n"
+            f"  - With --show-all-windows : 1 to {MAX_VISIBLE_GUESTS} guests (up to {1 + MAX_VISIBLE_GUESTS} visible emulator windows)\n"
+            f"Input rejected without launching any emulator."
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+    raise SystemExit(2)
 
 
 def load_env_file(env_path: Path) -> Dict[str, str]:
@@ -186,7 +213,7 @@ class ExpoAgentDeviceDriver:
             "--no-bundle-check",
             "--no-followups",
             "--max-nodes",
-            "500",
+            "800",
             "--json",
         ]
         if all_nodes:
@@ -395,15 +422,25 @@ def complete_onboarding_if_shown(driver: ExpoAgentDeviceDriver) -> None:
     raise TimeoutError("Organizer app never reached HomeScreen or OnboardingScreen")
 
 
-def organizer_create_manual_bill(org: ExpoAgentDeviceDriver) -> str:
-    org.record("step_1", "Creating 5-person manual receipt with 7 line items + Italian coperto")
+def organizer_create_manual_bill(
+    org: ExpoAgentDeviceDriver,
+    active_guest_names: List[str],
+    bill_title: str,
+    expected_coperto_cents: int,
+    expected_grand_total_cents: int,
+) -> str:
+    total_diners = 1 + len(active_guest_names)
+    org.record(
+        "step_1",
+        f"Creating {total_diners}-person manual receipt with 7 line items + Italian coperto",
+    )
     org.tap("fab-trigger")
     org.wait_for_testid("fab-manual-btn", timeout_s=15)
     org.tap("fab-manual-btn")
 
     org.wait_for_testid("home-manual-title-input", timeout_s=15)
-    org.type_text("home-manual-title-input", "Trattoria Quota 5-Phone E2E")
-    for name in GUEST_NAMES:
+    org.type_text("home-manual-title-input", bill_title)
+    for name in active_guest_names:
         org.type_text("home-manual-participant-input", name)
         org.tap("home-manual-add-participant-btn")
         time.sleep(0.25)
@@ -412,14 +449,16 @@ def organizer_create_manual_bill(org: ExpoAgentDeviceDriver) -> str:
     org.wait_for_testid("manual-mode-by-item", timeout_s=20)
     org.tap("manual-mode-by-item")
 
-    # Enable Coperto and set EUR 2.50 per person (5 * 2.50 = 12.50)
+    # Enable Coperto and set EUR 2.50 per person
     org.wait_for_testid("manual-coperto-toggle", timeout_s=15)
     org.tap("manual-coperto-toggle")
     org.wait_for_testid("manual-coperto-amount-input", timeout_s=15)
     org.type_text("manual-coperto-amount-input", f"{COPERTO_PER_PERSON_EUR:.2f}")
     time.sleep(0.3)
     coperto_txt = org.get_node_text("manual-coperto-total-text")
-    assert _parse_euro_cents(coperto_txt) == EXPECTED_COPERTO_CENTS, f"Unexpected coperto total text: {coperto_txt}"
+    assert _parse_euro_cents(coperto_txt) == expected_coperto_cents, (
+        f"Unexpected coperto total text: {coperto_txt} (expected {expected_coperto_cents}c)"
+    )
     org.record("coperto_configured", f"Coperto = {coperto_txt}")
 
     # Add 7 line items
@@ -446,8 +485,8 @@ def organizer_create_manual_bill(org: ExpoAgentDeviceDriver) -> str:
 
     footer_total = org.get_node_text("manual-footer-total")
     footer_cents = _parse_euro_cents(footer_total)
-    assert footer_cents == EXPECTED_GRAND_TOTAL_CENTS, (
-        f"Expected organizer footer total {EXPECTED_GRAND_TOTAL_CENTS}c, got {footer_total}"
+    assert footer_cents == expected_grand_total_cents, (
+        f"Expected organizer footer total {expected_grand_total_cents}c, got {footer_total}"
     )
     footer_org = org.get_node_text("manual-footer-organizer-share")
     assert _parse_euro_cents(footer_org) == 1600, f"Expected organizer share EUR 16.00 (13.50+2.50), got {footer_org}"
@@ -557,7 +596,23 @@ def guest_compute_local_breakdown_cents(bill: Dict[str, Any]) -> Dict[str, int]:
     return shares
 
 
-def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path: Path) -> Dict[str, Any]:
+def run_e2e(
+    num_guests: int,
+    headless_guests: bool,
+    seed: int,
+    keep_alive_on_fail: bool,
+    apk_path: Path,
+) -> Dict[str, Any]:
+    validate_guest_config(num_guests, headless_guests)
+    slots = build_phone_slots(num_guests)
+    active_guest_names = list(ALL_GUEST_NAMES[:num_guests])
+    total_diners = 1 + num_guests
+    expected_coperto_cents = int(round(COPERTO_PER_PERSON_EUR * 100)) * total_diners
+    expected_grand_total_cents = EXPECTED_ITEMS_CENTS + expected_coperto_cents
+    expected_grand_total_str = f"{expected_grand_total_cents / 100:.2f}"
+    bill_title = f"Trattoria Quota {total_diners}-Phone E2E"
+    convergence_timeout_s = float(max(45, 15 * num_guests))
+
     rng = random.Random(seed)
     start_ts = datetime.now(timezone.utc)
     env_map = load_env_file(PROJECT_ROOT / ".env")
@@ -570,18 +625,20 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
 
     fleet = AndroidEmulatorFleet(
         project_root=PROJECT_ROOT,
-        slots=list(DEFAULT_PHONE_SLOTS),
+        slots=slots,
         headless_guests=headless_guests,
     )
     drivers: Dict[str, ExpoAgentDeviceDriver] = {
-        slot.serial: ExpoAgentDeviceDriver(fleet, slot) for slot in DEFAULT_PHONE_SLOTS
+        slot.serial: ExpoAgentDeviceDriver(fleet, slot) for slot in slots
     }
     report: Dict[str, Any] = {
         "started_at": start_ts.isoformat(),
         "seed": seed,
+        "num_guests": num_guests,
+        "total_diners": total_diners,
         "headless_guests": headless_guests,
         "apk_path": str(apk_path),
-        "expected_grand_total_cents": EXPECTED_GRAND_TOTAL_CENTS,
+        "expected_grand_total_cents": expected_grand_total_cents,
         "status": "FAILED",
     }
 
@@ -604,25 +661,31 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
         install_duration_s = round(time.time() - t0 - boot_duration_s, 2)
         report["install_duration_s"] = install_duration_s
 
-        # 1. Phone 1 (Organizer) creates & publishes 5-person bill
-        org_slot = DEFAULT_PHONE_SLOTS[0]
+        # 1. Phone 1 (Organizer) creates & publishes (1+N)-person bill
+        org_slot = slots[0]
         org_driver = drivers[org_slot.serial]
         fleet.launch_app(org_slot)
-        fleet.wait_for_inspector_target(org_slot, timeout_s=90)
+        fleet.wait_for_inspector_target(org_slot, timeout_s=120)
         time.sleep(2.0)
         complete_onboarding_if_shown(org_driver)
-        bill_id = organizer_create_manual_bill(org_driver)
+        bill_id = organizer_create_manual_bill(
+            org_driver,
+            active_guest_names=active_guest_names,
+            bill_title=bill_title,
+            expected_coperto_cents=expected_coperto_cents,
+            expected_grand_total_cents=expected_grand_total_cents,
+        )
         deep_link_url = f"quota://bill/{bill_id}?mode=guest"
         report["bill_id"] = bill_id
         report["deep_link_url"] = deep_link_url
 
-        # 2. Launch Phones 2-5 concurrently on Organizer's deep link
-        guest_slots = DEFAULT_PHONE_SLOTS[1:]
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        # 2. Launch Guest Phones concurrently on Organizer's deep link
+        guest_slots = slots[1:]
+        with ThreadPoolExecutor(max_workers=min(4, num_guests)) as pool:
             for gs in guest_slots:
                 fleet.launch_app(gs, deep_link_url=deep_link_url)
 
-            futs = [pool.submit(fleet.wait_for_inspector_target, gs, 90.0) for gs in guest_slots]
+            futs = [pool.submit(fleet.wait_for_inspector_target, gs, 120.0) for gs in guest_slots]
             for f in as_completed(futs):
                 f.result()
             time.sleep(2.0)
@@ -631,7 +694,7 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
                 drv = drivers[gs.serial]
                 drv.wait_for_testid("guest-name-input", timeout_s=45)
                 hydrated = wait_for_bill_hydration(drv, bill_id, timeout_s=45)
-                assert hydrated["restaurantName"] == "Trattoria Quota 5-Phone E2E", (
+                assert hydrated["restaurantName"] == bill_title, (
                     f"Mock or wrong bill hydrated on {gs.serial}: {hydrated.get('restaurantName')}"
                 )
                 drv.type_text("guest-name-input", gs.guest_name or f"Guest{gs.index}")
@@ -653,45 +716,51 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
             gs.guest_name: drivers[gs.serial] for gs in guest_slots if gs.guest_name
         }
 
-        # 3A. Conflict Test 1: 3-way simultaneous overlapping tap on shared single item 1 (€16.00)
-        barrier_3way = threading.Barrier(3)
+        # 3A. Conflict Test 1: up to 3-way simultaneous overlapping tap on shared single item 1 (€16.00)
+        shared_guests = active_guest_names[: min(3, num_guests)]
+        barrier_shared = threading.Barrier(len(shared_guests))
+
         def _tap_shared_item(drv: ExpoAgentDeviceDriver) -> None:
-            barrier_3way.wait(timeout=20)
+            barrier_shared.wait(timeout=20)
             drv.tap("guest-item-claim-btn-1")
 
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            futs = [
-                pool.submit(_tap_shared_item, guest_by_name["Marco"]),
-                pool.submit(_tap_shared_item, guest_by_name["Sara"]),
-                pool.submit(_tap_shared_item, guest_by_name["Elena"]),
-            ]
+        with ThreadPoolExecutor(max_workers=len(shared_guests)) as pool:
+            futs = [pool.submit(_tap_shared_item, guest_by_name[gn]) for gn in shared_guests]
             for f in as_completed(futs):
                 f.result()
 
         bill_after_shared = wait_for_table_convergence(
             org_driver,
             bill_id,
-            lambda b: len((b["items"][1].get("assignedParticipantIds") or [])) == 3
-            or len(([it for it in b["items"] if not it.get("isCoperto")][1].get("assignedParticipantIds") or [])) == 3,
-            "3-way shared item 1 claim convergence",
-            timeout_s=35,
+            lambda b: len(
+                ([it for it in b.get("items", []) if not it.get("isCoperto")][1].get("assignedParticipantIds") or [])
+            )
+            == len(shared_guests),
+            f"{len(shared_guests)}-way shared item 1 claim convergence",
+            timeout_s=convergence_timeout_s,
         )
         item1 = [it for it in bill_after_shared["items"] if not it.get("isCoperto")][1]
-        assert len(item1["assignedParticipantIds"]) == 3, f"Expected 3 co-claimers on item 1, got {item1}"
-        org_driver.record("conflict_test_1_passed", f"3-way overlapping claim on item 1 converged cleanly: {item1['assignedParticipantIds']}")
+        assert len(item1["assignedParticipantIds"]) == len(shared_guests), (
+            f"Expected {len(shared_guests)} co-claimers on item 1, got {item1}"
+        )
+        org_driver.record(
+            "conflict_test_1_passed",
+            f"{len(shared_guests)}-way overlapping claim on item 1 converged cleanly: {item1['assignedParticipantIds']}",
+        )
 
-        # 3B. Conflict Test 2: 3-way simultaneous overlapping + taps on multi-qty item 2 (qty=2)
-        barrier_qty = threading.Barrier(3)
+        # 3B. Conflict Test 2: simultaneous overlapping + taps on multi-qty item 2 (qty=2)
+        if num_guests >= 3:
+            race_guests = [active_guest_names[0], active_guest_names[1], active_guest_names[-1]]
+        else:
+            race_guests = list(active_guest_names)
+        barrier_qty = threading.Barrier(len(race_guests))
+
         def _tap_qty_item(drv: ExpoAgentDeviceDriver) -> None:
             barrier_qty.wait(timeout=20)
             drv.tap("guest-item-plus-2")
 
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            futs = [
-                pool.submit(_tap_qty_item, guest_by_name["Marco"]),
-                pool.submit(_tap_qty_item, guest_by_name["Sara"]),
-                pool.submit(_tap_qty_item, guest_by_name["Davide"]),
-            ]
+        with ThreadPoolExecutor(max_workers=len(race_guests)) as pool:
+            futs = [pool.submit(_tap_qty_item, guest_by_name[gn]) for gn in race_guests]
             for f in as_completed(futs):
                 f.result()
 
@@ -700,43 +769,61 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
             org_driver,
             bill_id,
             lambda b: sum(([it for it in b["items"] if not it.get("isCoperto")][2].get("claimedQuantities") or {}).values()) >= 1,
-            "3-way qty=2 item 2 race convergence",
-            timeout_s=30,
+            "qty=2 item 2 race convergence",
+            timeout_s=convergence_timeout_s,
         )
         item2 = [it for it in bill_after_qty["items"] if not it.get("isCoperto")][2]
         claimed_2_sum = sum((item2.get("claimedQuantities") or {}).values())
         assert 1 <= claimed_2_sum <= 2, f"Item 2 over-claimed during concurrent taps: {item2}"
-        org_driver.record("conflict_test_2_passed", f"qty=2 concurrent race capped safely at {claimed_2_sum}/2: {item2.get('claimedQuantities')}")
+        org_driver.record(
+            "conflict_test_2_passed",
+            f"qty=2 concurrent race capped safely at {claimed_2_sum}/2: {item2.get('claimedQuantities')}",
+        )
 
-        # Ensure exact 2/2 on item 2 and randomized claims across items 3..6
-        # Force all 4 guests to pull latest before randomized assignment
+        # Sync all guests before deterministic-coverage + randomized remaining assignments
         for drv in guest_by_name.values():
-            drv.eval_js(f"globalThis.__QUOTA_BILL_SYNC__?.fetchBillFromCloud({json.dumps(bill_id)}).then(b => b && globalThis.__QUOTA_BILL_STORE__?.getState()?.upsertBill(b))")
+            drv.eval_js(
+                f"globalThis.__QUOTA_BILL_SYNC__?.fetchBillFromCloud({json.dumps(bill_id)}).then(b => b && globalThis.__QUOTA_BILL_STORE__?.getState()?.upsertBill(b))"
+            )
         time.sleep(1.0)
 
-        p_name_by_id = {p["id"]: p["name"] for p in bill_after_qty["participants"]}
-        # If item 2 only got 1 unit won in race, top up remaining 1 unit to a random guest (favoring Davide if Davide missed out)
+        p_id_by_name = {p["name"]: p["id"] for p in bill_after_qty["participants"]}
+        covered_pids = set()
+        for it in bill_after_qty.get("items", []):
+            if it.get("isCoperto"):
+                continue
+            for pid, q in (it.get("claimedQuantities") or {}).items():
+                if q and q > 0:
+                    covered_pids.add(pid)
+            for pid in it.get("assignedParticipantIds") or []:
+                covered_pids.add(pid)
+
+        uncovered_guests = [gn for gn in active_guest_names if p_id_by_name.get(gn) not in covered_pids]
+        rng.shuffle(uncovered_guests)
+
+        def _pick_guest() -> str:
+            return uncovered_guests.pop(0) if uncovered_guests else rng.choice(active_guest_names)
+
+        # Top up remaining units on item 2 if < 2 claimed during Conflict Test 2
         remaining_item2 = 2 - claimed_2_sum
         for _ in range(remaining_item2):
-            chosen_guest = rng.choice(["Davide", "Marco", "Sara", "Elena"])
+            chosen_guest = _pick_guest()
             guest_by_name[chosen_guest].tap("guest-item-plus-2")
-            time.sleep(1.0)
+            time.sleep(0.9)
 
-        # Randomly assign single item 4 and multi-qty items 3 (qty=2), 5 (qty=3), 6 (qty=2)
-        # Ensure Davide claims at least item 4 if not already claimed so every guest has >= 1 item
-        order_pool = list(GUEST_NAMES)
-        rng.shuffle(order_pool)
-        item4_assignee = "Davide" if (sum((item2.get("claimedQuantities") or {}).get(pid, 0) for pid, nm in p_name_by_id.items() if nm == "Davide") == 0) else order_pool[0]
+        # Randomly assign single item 4 and multi-qty items 3 (qty=2), 5 (qty=3), 6 (qty=2),
+        # draining uncovered_guests first so every guest has >= 1 claimed item.
+        item4_assignee = _pick_guest()
         guest_by_name[item4_assignee].tap("guest-item-claim-btn-4")
         time.sleep(0.8)
 
         multi_allocations: Dict[int, List[str]] = {3: [], 5: [], 6: []}
         for item_idx, qty in ((3, 2), (5, 3), (6, 2)):
             for _ in range(qty):
-                chosen = rng.choice(GUEST_NAMES)
+                chosen = _pick_guest()
                 multi_allocations[item_idx].append(chosen)
                 guest_by_name[chosen].tap(f"guest-item-plus-{item_idx}")
-                time.sleep(0.75)
+                time.sleep(0.8)
 
         report["randomized_allocations"] = {
             "seed": seed,
@@ -762,16 +849,18 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
             bill_id,
             _all_items_fully_claimed,
             "100% of items & quantities claimed across all guests",
-            timeout_s=45,
+            timeout_s=convergence_timeout_s,
         )
 
-        # Sync latest converged state to all 4 guests and assert local UI totals match expected math
+        # Sync latest converged state to all guests and assert local UI totals match expected math
         expected_shares_cents = guest_compute_local_breakdown_cents(converged_bill)
-        assert sum(expected_shares_cents.values()) == EXPECTED_GRAND_TOTAL_CENTS, (
-            f"Pre-payment breakdown sum mismatch: {expected_shares_cents}"
+        assert sum(expected_shares_cents.values()) == expected_grand_total_cents, (
+            f"Pre-payment breakdown sum mismatch: {expected_shares_cents} (expected {expected_grand_total_cents}c)"
         )
         for drv in guest_by_name.values():
-            drv.eval_js(f"globalThis.__QUOTA_BILL_SYNC__?.fetchBillFromCloud({json.dumps(bill_id)}).then(b => b && globalThis.__QUOTA_BILL_STORE__?.getState()?.upsertBill(b))")
+            drv.eval_js(
+                f"globalThis.__QUOTA_BILL_SYNC__?.fetchBillFromCloud({json.dumps(bill_id)}).then(b => b && globalThis.__QUOTA_BILL_STORE__?.getState()?.upsertBill(b))"
+            )
         time.sleep(1.0)
 
         for gname, drv in guest_by_name.items():
@@ -783,37 +872,34 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
             )
             drv.record("share_verified", f"UI share={share_txt} ({ui_cents}c)")
 
-        # 4. End-of-Meal Payment across Phones 2-5
-        # Phones 2 & 3 -> Google Pay; Phones 4 & 5 -> SEPA Instant
+        # 4. End-of-Meal Payment across Guest Phones (alternating Google Pay & SEPA Instant)
         pay_methods = {
-            "Marco": "payment-google-pay-btn",
-            "Sara": "payment-google-pay-btn",
-            "Elena": "payment-sepa-btn",
-            "Davide": "payment-sepa-btn",
+            gname: ("payment-google-pay-btn" if idx % 2 == 0 else "payment-sepa-btn")
+            for idx, gname in enumerate(active_guest_names)
         }
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=min(4, num_guests)) as pool:
             def _pay_guest(gname: str) -> None:
                 drv = guest_by_name[gname]
                 btn_id = pay_methods[gname]
                 drv.tap("guest-proceed-payment-btn")
-                drv.wait_for_testid(btn_id, timeout_s=20)
+                drv.wait_for_testid(btn_id, timeout_s=25)
                 drv.tap(btn_id)
-                drv.wait_for_testid("alert-modal-btn-0", timeout_s=25)
+                drv.wait_for_testid("alert-modal-btn-0", timeout_s=30)
                 drv.tap("alert-modal-btn-0")
-                drv.wait_for_testid("summary-collected-text", timeout_s=25)
+                drv.wait_for_testid("summary-collected-text", timeout_s=30)
                 drv.record("payment_completed", f"Paid via {btn_id}")
 
-            pay_futs = [pool.submit(_pay_guest, gname) for gname in GUEST_NAMES]
+            pay_futs = [pool.submit(_pay_guest, gname) for gname in active_guest_names]
             for f in as_completed(pay_futs):
                 f.result()
 
-        # 5. Phone 1 verifies real-time payment updates for all 4 guests, then settles Organizer share
+        # 5. Phone 1 verifies real-time payment updates for all guests, then settles Organizer share
         wait_for_table_convergence(
             org_driver,
             bill_id,
-            lambda b: sum(1 for p in b["participants"] if not p.get("isOrganizer") and p.get("status") == "paid") == 4,
-            "all 4 guests paid on Organizer",
-            timeout_s=45,
+            lambda b: sum(1 for p in b["participants"] if not p.get("isOrganizer") and p.get("status") == "paid") == num_guests,
+            f"all {num_guests} guests paid on Organizer",
+            timeout_s=convergence_timeout_s,
         )
         org_driver.wait_for_testid("summary-confirm-organizer-settlement-btn", timeout_s=15)
         org_driver.tap("summary-confirm-organizer-settlement-btn")
@@ -824,21 +910,23 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
             lambda b: b.get("status") == "settled"
             and all(p.get("status") == "paid" for p in b.get("participants", [])),
             "bill settled after Organizer confirmation",
-            timeout_s=30,
+            timeout_s=convergence_timeout_s,
         )
         time.sleep(1.5)  # allow LiveStatusDeck + Supabase write queue flush
 
         # 6A. Strict Verification against Phone 1 LIVE UI
         collected_ui = org_driver.get_node_text("summary-collected-text")
         status_badge_ui = org_driver.get_node_text("summary-status-badge")
-        assert "166.50" in collected_ui, f"Phone 1 collected UI missing €166.50: {collected_ui}"
+        assert expected_grand_total_str in collected_ui, (
+            f"Phone 1 collected UI missing €{expected_grand_total_str}: {collected_ui}"
+        )
         assert "100%" in status_badge_ui.upper() or "SETTLED" in status_badge_ui.upper() or "SALDATO" in status_badge_ui.upper(), (
             f"Phone 1 status badge not settled: {status_badge_ui}"
         )
 
         ui_rows = []
         ui_sum_cents = 0
-        for idx in range(5):
+        for idx in range(total_diners):
             row_name = org_driver.get_node_text(f"summary-participant-name-{idx}")
             row_status = org_driver.get_node_text(f"summary-participant-status-{idx}")
             row_amt = org_driver.get_node_text(f"summary-participant-amount-{idx}")
@@ -850,8 +938,8 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
             ui_sum_cents += row_cents
             ui_rows.append({"index": idx, "name": row_name, "status": row_status, "amount": row_amt, "cents": row_cents})
 
-        assert ui_sum_cents == EXPECTED_GRAND_TOTAL_CENTS, (
-            f"Phone 1 UI participant sum {ui_sum_cents}c != {EXPECTED_GRAND_TOTAL_CENTS}c"
+        assert ui_sum_cents == expected_grand_total_cents, (
+            f"Phone 1 UI participant sum {ui_sum_cents}c != {expected_grand_total_cents}c"
         )
 
         # 6B. Strict Verification against Supabase Database State
@@ -859,14 +947,16 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
         bill_row = sb_state["bill_row"]
         assert bill_row is not None, f"Bill {bill_id} not found in Supabase `bills` table"
         assert bill_row["status"] == "completed", f"Supabase bills.status expected 'completed', got {bill_row['status']!r}"
-        assert int(round(float(bill_row["total_amount"]) * 100)) == EXPECTED_GRAND_TOTAL_CENTS, (
-            f"Supabase bills.total_amount mismatch: {bill_row['total_amount']}"
+        assert int(round(float(bill_row["total_amount"]) * 100)) == expected_grand_total_cents, (
+            f"Supabase bills.total_amount mismatch: {bill_row['total_amount']} (expected {expected_grand_total_cents}c)"
         )
 
         parsed_cloud = json.loads(bill_row["title"])
         cloud_bill = parsed_cloud["bill"]
         assert cloud_bill["status"] == "settled", f"Cloud JSON bill.status expected 'settled', got {cloud_bill['status']!r}"
-        assert len(cloud_bill["participants"]) == 5, f"Expected 5 participants in Supabase, got {len(cloud_bill['participants'])}"
+        assert len(cloud_bill["participants"]) == total_diners, (
+            f"Expected {total_diners} participants in Supabase, got {len(cloud_bill['participants'])}"
+        )
 
         cloud_paid_sum_cents = 0
         for p in cloud_bill["participants"]:
@@ -876,8 +966,8 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
                 f"Supabase paidAmount mismatch for {p['name']}: {p_cents}c != {expected_shares_cents[p['id']]}c"
             )
             cloud_paid_sum_cents += p_cents
-        assert cloud_paid_sum_cents == EXPECTED_GRAND_TOTAL_CENTS, (
-            f"Supabase sum(paidAmount)={cloud_paid_sum_cents}c != {EXPECTED_GRAND_TOTAL_CENTS}c"
+        assert cloud_paid_sum_cents == expected_grand_total_cents, (
+            f"Supabase sum(paidAmount)={cloud_paid_sum_cents}c != {expected_grand_total_cents}c"
         )
 
         # Item & Coperto 100% accounted for assertions
@@ -893,12 +983,12 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
 
         splits_rows = sb_state["splits_rows"]
         if splits_rows:
-            assert len(splits_rows) == 5, f"Expected 5 bill_splits rows, got {len(splits_rows)}"
+            assert len(splits_rows) == total_diners, f"Expected {total_diners} bill_splits rows, got {len(splits_rows)}"
             for sr in splits_rows:
                 assert sr["status"] == "paid", f"bill_splits row not paid: {sr}"
             splits_sum_cents = sum(int(round(float(sr["owed_amount"]) * 100)) for sr in splits_rows)
-            assert splits_sum_cents == EXPECTED_GRAND_TOTAL_CENTS, (
-                f"bill_splits sum {splits_sum_cents}c != {EXPECTED_GRAND_TOTAL_CENTS}c"
+            assert splits_sum_cents == expected_grand_total_cents, (
+                f"bill_splits sum {splits_sum_cents}c != {expected_grand_total_cents}c"
             )
 
         succeeded = True
@@ -909,14 +999,14 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
                 "status_badge": status_badge_ui,
                 "participant_rows": ui_rows,
                 "sum_cents": ui_sum_cents,
-                "diff_cents": ui_sum_cents - EXPECTED_GRAND_TOTAL_CENTS,
+                "diff_cents": ui_sum_cents - expected_grand_total_cents,
             },
             "supabase": {
                 "bills_row_id": bill_row["id"],
                 "bills_status": bill_row["status"],
                 "bills_total_cents": int(round(float(bill_row["total_amount"]) * 100)),
                 "cloud_paid_sum_cents": cloud_paid_sum_cents,
-                "diff_cents": cloud_paid_sum_cents - EXPECTED_GRAND_TOTAL_CENTS,
+                "diff_cents": cloud_paid_sum_cents - expected_grand_total_cents,
                 "bill_splits_count": len(splits_rows),
                 "bill_splits_sum_cents": sum(int(round(float(sr["owed_amount"]) * 100)) for sr in splits_rows) if splits_rows else None,
                 "bill_items_count": len(sb_state["items_rows"]),
@@ -928,41 +1018,52 @@ def run_e2e(headless_guests: bool, seed: int, keep_alive_on_fail: bool, apk_path
         report["error"] = str(exc)
         raise
     finally:
+        if succeeded or not keep_alive_on_fail:
+            fleet.shutdown()
+            report["remaining_emulators_after_shutdown"] = list_connected_emulators(fleet.adb_exe)
+
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         report["total_duration_s"] = round((datetime.now(timezone.utc) - start_ts).total_seconds(), 2)
         report["device_logs"] = {serial: drv.logs for serial, drv in drivers.items()}
         reports_dir = PROJECT_ROOT / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
-        out_path = reports_dir / f"e2e_5_android_phones_{start_ts.strftime('%Y%m%dT%H%M%SZ')}.json"
+        out_path = reports_dir / f"e2e_{total_diners}_android_phones_{start_ts.strftime('%Y%m%dT%H%M%SZ')}.json"
         out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"[e2e] Saved report artifact: {out_path}", flush=True)
 
-        if succeeded or not keep_alive_on_fail:
-            fleet.shutdown()
-            remaining = list_connected_emulators(fleet.adb_exe)
-            report["remaining_emulators_after_shutdown"] = remaining
-
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="5-Phone Local Android Emulator E2E Test")
-    parser.add_argument("--headless-guests", dest="headless_guests", action="store_true", default=True)
-    parser.add_argument("--show-all-windows", dest="headless_guests", action="store_false")
+    parser = argparse.ArgumentParser(description="Multi-Phone Local Android Emulator E2E Test")
+    parser.add_argument(
+        "-g",
+        "--guests",
+        type=int,
+        default=4,
+        help="Number of guest emulators (1-9 with --headless-guests, 1-3 with --show-all-windows)",
+    )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--headless-guests", dest="headless_guests", action="store_true")
+    mode_group.add_argument("--show-all-windows", "--all-windows", dest="headless_guests", action="store_false")
+    parser.set_defaults(headless_guests=True)
     parser.add_argument("--seed", type=int, default=int(time.time()))
     parser.add_argument("--apk", type=str, default="android/app/build/outputs/apk/debug/app-debug.apk")
     parser.add_argument("--keep-alive-on-fail", action="store_true", default=False)
     args = parser.parse_args()
+
+    validate_guest_config(args.guests, args.headless_guests)
 
     apk = Path(args.apk)
     if not apk.is_absolute():
         apk = PROJECT_ROOT / apk
 
     run_e2e(
+        num_guests=args.guests,
         headless_guests=args.headless_guests,
         seed=args.seed,
         keep_alive_on_fail=args.keep_alive_on_fail,
         apk_path=apk,
     )
-    print("[e2e] ALL 5-PHONE ANDROID E2E ASSERTIONS PASSED!", flush=True)
+    print(f"[e2e] ALL {1 + args.guests}-PHONE ANDROID E2E ASSERTIONS PASSED!", flush=True)
     return 0
 
 

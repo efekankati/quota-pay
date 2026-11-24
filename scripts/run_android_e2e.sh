@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+MAX_HEADLESS_GUESTS=9
+MAX_VISIBLE_GUESTS=3
+
+GUESTS=""
+MODE_SET=""
+HEADLESS_GUESTS=1
+SEED=""
+APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+KEEP_ALIVE_ON_FAIL=0
+
+print_usage() {
+  cat <<'EOF'
+Usage:
+  scripts/run_android_e2e.sh --guests <N> [--headless-guests | --show-all-windows] [options]
+  scripts/run_android_e2e.sh <N> [--headless-guests | --show-all-windows] [options]
+
+Allowed guest limits:
+  --headless-guests   Allows 1 to 9 guests (1 Organizer visible + up to 9 headless guests = 10 emulators)
+  --show-all-windows  Allows 1 to 3 guests (1 Organizer + up to 3 visible guest windows = 4 visible emulators)
+
+Options:
+  -g, --guests <N>        Number of guests (integer)
+      --headless-guests   Run guests headless with Organizer window visible (default; 1-9 guests)
+      --show-all-windows  Show all emulator windows (alias: --all-windows; 1-3 guests)
+      --all-windows       Alias for --show-all-windows
+      --seed <INT>        Deterministic random seed passed to the E2E runner
+      --apk <PATH>        APK path (default: android/app/build/outputs/apk/debug/app-debug.apk)
+      --keep-alive-on-fail Keep emulators running if E2E fails
+  -h, --help              Show this help and exit
+
+Examples:
+  scripts/run_android_e2e.sh --guests 3 --show-all-windows
+  scripts/run_android_e2e.sh --guests 9 --headless-guests
+EOF
+}
+
+reject_input() {
+  local reason="$1"
+  {
+    echo "ERROR: ${reason}"
+    echo ""
+    echo "Accepted guest-count conditions:"
+    echo "  - With --headless-guests  : integer N from 1 to ${MAX_HEADLESS_GUESTS} (up to 10 emulators total)"
+    echo "  - With --show-all-windows : integer N from 1 to ${MAX_VISIBLE_GUESTS} (up to 4 visible emulator windows)"
+    echo "Input rejected without launching any emulator."
+  } >&2
+  exit 2
+}
+
+require_value() {
+  local flag="$1"
+  local remaining="$2"
+  if [[ "${remaining}" -lt 2 ]]; then
+    reject_input "Flag '${flag}' requires a value."
+  fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      print_usage
+      exit 0
+      ;;
+    -g|--guests)
+      require_value "$1" "$#"
+      if [[ -n "${GUESTS}" ]]; then
+        reject_input "Duplicate guest count provided ('$GUESTS' and '$2')."
+      fi
+      GUESTS="$2"
+      shift 2
+      ;;
+    --guests=*)
+      val="${1#*=}"
+      if [[ -z "${val}" ]]; then
+        reject_input "Flag '--guests=' requires a value."
+      fi
+      if [[ -n "${GUESTS}" ]]; then
+        reject_input "Duplicate guest count provided ('$GUESTS' and '${val}')."
+      fi
+      GUESTS="${val}"
+      shift
+      ;;
+    --headless-guests)
+      if [[ "${MODE_SET}" == "visible" ]]; then
+        reject_input "Cannot combine --headless-guests and --show-all-windows."
+      fi
+      MODE_SET="headless"
+      HEADLESS_GUESTS=1
+      shift
+      ;;
+    --show-all-windows|--all-windows)
+      if [[ "${MODE_SET}" == "headless" ]]; then
+        reject_input "Cannot combine --headless-guests and --show-all-windows."
+      fi
+      MODE_SET="visible"
+      HEADLESS_GUESTS=0
+      shift
+      ;;
+    --seed)
+      require_value "$1" "$#"
+      SEED="$2"
+      if ! [[ "${SEED}" =~ ^-?[0-9]+$ ]]; then
+        reject_input "Flag '--seed' must be an integer, got '${SEED}'."
+      fi
+      shift 2
+      ;;
+    --apk)
+      require_value "$1" "$#"
+      APK_PATH="$2"
+      if [[ -z "${APK_PATH}" ]]; then
+        reject_input "Flag '--apk' requires a non-empty path."
+      fi
+      shift 2
+      ;;
+    --keep-alive-on-fail)
+      KEEP_ALIVE_ON_FAIL=1
+      shift
+      ;;
+    -*)
+      reject_input "Unknown option '$1'. Run with --help for usage."
+      ;;
+    *)
+      if [[ -n "${GUESTS}" ]]; then
+        reject_input "Unexpected extra positional argument '$1' (guest count already set to '${GUESTS}')."
+      fi
+      GUESTS="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "${GUESTS}" ]]; then
+  reject_input "Missing required guest count parameter (-g / --guests <N> or positional <N>)."
+fi
+
+if ! [[ "${GUESTS}" =~ ^[0-9]+$ ]]; then
+  reject_input "Guest count '${GUESTS}' is not a valid positive integer."
+fi
+
+GUESTS_INT=$((10#${GUESTS}))
+
+if [[ "${GUESTS_INT}" -lt 1 ]]; then
+  reject_input "Guest count must be at least 1 (got '${GUESTS}')."
+fi
+
+if [[ "${HEADLESS_GUESTS}" -eq 1 ]]; then
+  if [[ "${GUESTS_INT}" -gt "${MAX_HEADLESS_GUESTS}" ]]; then
+    reject_input "Guest count ${GUESTS_INT} exceeds maximum ${MAX_HEADLESS_GUESTS} allowed with --headless-guests."
+  fi
+  MODE_FLAG="--headless-guests"
+  MODE_DESC="headless guests (Organizer visible + ${GUESTS_INT} headless guest(s))"
+else
+  if [[ "${GUESTS_INT}" -gt "${MAX_VISIBLE_GUESTS}" ]]; then
+    reject_input "Guest count ${GUESTS_INT} exceeds maximum ${MAX_VISIBLE_GUESTS} allowed with --show-all-windows."
+  fi
+  MODE_FLAG="--show-all-windows"
+  MODE_DESC="all windows shown ($((1 + GUESTS_INT)) visible emulator window(s))"
+fi
+
+RESOLVED_APK="${APK_PATH}"
+if [[ "${RESOLVED_APK}" != /* && ! "${RESOLVED_APK}" =~ ^[A-Za-z]: ]]; then
+  RESOLVED_APK="${REPO_ROOT}/${RESOLVED_APK}"
+fi
+if [[ ! -f "${RESOLVED_APK}" ]]; then
+  echo "ERROR: Debug APK not found at '${RESOLVED_APK}'." >&2
+  exit 1
+fi
+
+PYTHON_CMD=()
+if command -v python >/dev/null 2>&1; then
+  PYTHON_CMD=(python)
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_CMD=(python3)
+elif command -v py >/dev/null 2>&1; then
+  PYTHON_CMD=(py -3)
+else
+  echo "ERROR: Python executable not found on PATH." >&2
+  exit 1
+fi
+
+PY_ARGS=(
+  "${REPO_ROOT}/e2e/five_phone_android_e2e.py"
+  --guests "${GUESTS_INT}"
+  "${MODE_FLAG}"
+  --apk "${RESOLVED_APK}"
+)
+if [[ -n "${SEED}" ]]; then
+  PY_ARGS+=(--seed "${SEED}")
+fi
+if [[ "${KEEP_ALIVE_ON_FAIL}" -eq 1 ]]; then
+  PY_ARGS+=(--keep-alive-on-fail)
+fi
+
+echo "[run_android_e2e] Starting E2E run: 1 Organizer + ${GUESTS_INT} Guest(s) | Mode: ${MODE_DESC}"
+echo "[run_android_e2e] APK: ${RESOLVED_APK}"
+
+cd "${REPO_ROOT}"
+exec "${PYTHON_CMD[@]}" "${PY_ARGS[@]}"
