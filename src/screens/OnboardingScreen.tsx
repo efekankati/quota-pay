@@ -138,6 +138,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
             <View style={[styles.inputBox, { backgroundColor: colors.surfaceElevated, borderColor: colors.border }]}>
               <Phone size={18} color={colors.textSecondary} />
               <TextInput
+                testID="onboarding-phone-input"
                 value={phone}
                 onChangeText={setPhone}
                 placeholder={t('phonePlaceholder')}
@@ -148,6 +149,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
             </View>
 
             <Button
+              testID="onboarding-send-otp-btn"
               title={t('continueSmsOtp')}
               onPress={handleSendPhone}
               isLoading={isSubmitting}
@@ -191,6 +193,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
             <View style={[styles.inputBox, { backgroundColor: colors.surfaceElevated, borderColor: colors.border }]}>
               <Lock size={18} color={colors.accent} />
               <TextInput
+                testID="onboarding-otp-input"
                 value={otpCode}
                 onChangeText={setOtpCode}
                 placeholder="123456"
@@ -202,6 +205,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
             </View>
 
             <Button
+              testID="onboarding-verify-otp-btn"
               title={t('verifyAndContinue')}
               onPress={handleVerifyOtp}
               isLoading={isSubmitting}
@@ -240,6 +244,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
               <View style={[styles.inputBox, { backgroundColor: colors.surfaceElevated, borderColor: colors.border }]}>
                 <CreditCard size={18} color={colors.textSecondary} />
                 <TextInput
+                  testID="onboarding-iban-input"
                   value={ibanInput}
                   onChangeText={setIbanInput}
                   placeholder="IT60X0542811101000000123456"
@@ -275,6 +280,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
             </View>
 
             <Button
+              testID="onboarding-save-iban-btn"
               title={t('saveIbanAndStart')}
               onPress={handleSaveIban}
               isLoading={isSubmitting}
@@ -282,6 +288,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
             />
 
             <TouchableOpacity
+              testID="onboarding-skip-iban-btn"
               onPress={onComplete}
               style={styles.backLink}
             >

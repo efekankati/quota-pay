@@ -205,6 +205,7 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
 
             <View style={styles.actionBtnSlot}>
               <TouchableOpacity
+                testID="fab-camera-btn"
                 activeOpacity={0.85}
                 onPress={() => handleAction(onCameraPress)}
                 style={[
@@ -257,6 +258,7 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
 
             <View style={styles.actionBtnSlot}>
               <TouchableOpacity
+                testID="fab-gallery-btn"
                 activeOpacity={0.85}
                 onPress={() => handleAction(onGalleryPress)}
                 style={[
@@ -309,6 +311,7 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
 
             <View style={styles.actionBtnSlot}>
               <TouchableOpacity
+                testID="fab-manual-btn"
                 activeOpacity={0.85}
                 onPress={() => handleAction(onManualPress)}
                 style={[
@@ -327,6 +330,7 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
 
         {/* Main Floating Trigger Button */}
         <TouchableOpacity
+          testID="fab-trigger"
           activeOpacity={0.9}
           onPress={toggleMenu}
           style={[

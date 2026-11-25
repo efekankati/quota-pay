@@ -17,6 +17,7 @@ interface SatispayButtonProps {
   onPress: () => void;
   isLoading?: boolean;
   disabled?: boolean;
+  testID?: string;
 }
 
 export const SatispayButton: React.FC<SatispayButtonProps> = ({
@@ -24,6 +25,7 @@ export const SatispayButton: React.FC<SatispayButtonProps> = ({
   onPress,
   isLoading = false,
   disabled = false,
+  testID = 'payment-satispay-btn',
 }) => {
   const { colors } = useThemeStore();
   const { heavyImpact } = useHaptics();
@@ -38,6 +40,7 @@ export const SatispayButton: React.FC<SatispayButtonProps> = ({
 
   return (
     <TouchableOpacity
+      testID={testID}
       activeOpacity={0.85}
       onPress={handlePress}
       disabled={disabled || isLoading}

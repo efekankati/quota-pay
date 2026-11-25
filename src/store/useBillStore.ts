@@ -156,13 +156,17 @@ export const useBillStore = create<BillStoreState>()(
         ? Math.floor(totalCents / totalSeats) + (totalCents % totalSeats > 0 ? 1 : 0)
         : 0;
 
+    const initialOrgStatus = organizer.status ?? (isScannedReceipt ? 'pending' : 'paid');
     const organizerParticipant: Participant = {
       ...organizer,
       isOrganizer: true,
-      status: isScannedReceipt ? 'pending' : 'paid',
+      status: initialOrgStatus,
       paymentMethod: organizer.paymentMethod || 'card',
-      paidAt: isScannedReceipt ? undefined : organizer.paidAt || new Date().toISOString(),
-      paidAmount: isScannedReceipt ? 0 : organizerShareCents / 100,
+      paidAt:
+        initialOrgStatus === 'paid'
+          ? organizer.paidAt || new Date().toISOString()
+          : undefined,
+      paidAmount: initialOrgStatus === 'paid' ? organizerShareCents / 100 : 0,
       splitId: organizerSplitId,
     };
 
@@ -569,8 +573,16 @@ export const useBillStore = create<BillStoreState>()(
         const copertoItem = bill.items.find((item) => item.isCoperto);
         const updatedItems = bill.items.map((item) => {
           if (item.isCoperto) {
+            const nextQty = bill.isManual
+              ? Math.max(updatedParticipants.length, 1)
+              : item.quantity;
+            const nextTotal = bill.isManual
+              ? Math.round(nextQty * item.unitPrice * 100) / 100
+              : item.totalPrice;
             return {
               ...item,
+              quantity: nextQty,
+              totalPrice: nextTotal,
               assignedParticipantIds: updatedParticipants.map((p) => p.id),
             };
           }
@@ -584,13 +596,23 @@ export const useBillStore = create<BillStoreState>()(
           return item;
         });
 
+        let grandTotal = 0;
+        let copertoTotal = 0;
+        updatedItems.forEach((it) => {
+          grandTotal += it.totalPrice;
+          if (it.isCoperto) copertoTotal += it.totalPrice;
+        });
+        grandTotal = Math.round(grandTotal * 100) / 100;
+        copertoTotal = Math.round(copertoTotal * 100) / 100;
+
+        const nextCopertoItem = updatedItems.find((item) => item.isCoperto);
         const coversCount =
-          copertoItem && copertoItem.quantity > 0
-            ? Math.max(copertoItem.quantity, updatedParticipants.length)
+          nextCopertoItem && nextCopertoItem.quantity > 0
+            ? Math.max(nextCopertoItem.quantity, updatedParticipants.length)
             : updatedParticipants.length;
         const copertoPerPerson =
-          copertoItem && coversCount > 0
-            ? Math.round((copertoItem.totalPrice / coversCount) * 100) / 100
+          nextCopertoItem && coversCount > 0
+            ? Math.round((nextCopertoItem.totalPrice / coversCount) * 100) / 100
             : 0;
 
         return {
@@ -599,13 +621,22 @@ export const useBillStore = create<BillStoreState>()(
           includedParticipantIds: updatedIncluded,
           items: updatedItems,
           copertoPerPerson,
+          taxSummary: updatedItems.length > 0
+            ? {
+                ...bill.taxSummary,
+                copertoTotal,
+                grandTotal,
+                subtotal: Math.round((grandTotal / 1.1) * 100) / 100,
+                totalVat: Math.round((grandTotal - grandTotal / 1.1) * 100) / 100,
+              }
+            : bill.taxSummary,
         };
       });
       return { bills };
     });
     const updated = get().bills.find((b) => b.id === billId);
     if (updated) {
-      BillSyncService.broadcastBillUpdate(updated);
+      BillSyncService.broadcastBillUpdate(updated, newId);
     }
     return newId;
   },
@@ -617,6 +648,20 @@ export const useBillStore = create<BillStoreState>()(
         const updatedParticipants = bill.participants.filter((p) => p.id !== participantId);
         const updatedIncluded = (bill.includedParticipantIds || []).filter((id) => id !== participantId);
         const updatedItems = bill.items.map((item) => {
+          if (item.isCoperto) {
+            const nextQty = bill.isManual
+              ? Math.max(updatedParticipants.length, 1)
+              : item.quantity;
+            const nextTotal = bill.isManual
+              ? Math.round(nextQty * item.unitPrice * 100) / 100
+              : item.totalPrice;
+            return {
+              ...item,
+              quantity: nextQty,
+              totalPrice: nextTotal,
+              assignedParticipantIds: updatedParticipants.map((p) => p.id),
+            };
+          }
           const newAssigned = item.assignedParticipantIds.filter((id) => id !== participantId);
           const newClaimed = { ...(item.claimedQuantities || {}) };
           delete newClaimed[participantId];
@@ -626,11 +671,38 @@ export const useBillStore = create<BillStoreState>()(
             claimedQuantities: newClaimed,
           };
         });
+        let grandTotal = 0;
+        let copertoTotal = 0;
+        updatedItems.forEach((it) => {
+          grandTotal += it.totalPrice;
+          if (it.isCoperto) copertoTotal += it.totalPrice;
+        });
+        grandTotal = Math.round(grandTotal * 100) / 100;
+        copertoTotal = Math.round(copertoTotal * 100) / 100;
+        const copertoItem = updatedItems.find((it) => it.isCoperto);
+        const coversCount =
+          copertoItem && copertoItem.quantity > 0
+            ? Math.max(copertoItem.quantity, updatedParticipants.length)
+            : updatedParticipants.length;
+        const copertoPerPerson =
+          copertoItem && coversCount > 0
+            ? Math.round((copertoItem.totalPrice / coversCount) * 100) / 100
+            : 0;
         return {
           ...bill,
           participants: updatedParticipants,
           includedParticipantIds: updatedIncluded,
           items: updatedItems,
+          copertoPerPerson,
+          taxSummary: updatedItems.length > 0
+            ? {
+                ...bill.taxSummary,
+                copertoTotal,
+                grandTotal,
+                subtotal: Math.round((grandTotal / 1.1) * 100) / 100,
+                totalVat: Math.round((grandTotal - grandTotal / 1.1) * 100) / 100,
+              }
+            : bill.taxSummary,
         };
       });
       return { bills };
@@ -1122,7 +1194,7 @@ export const useBillStore = create<BillStoreState>()(
         // Do not change status to settled unless ALL the money has been covered
         const allMoneyCovered =
           grandTotal > 0 &&
-          Math.round(totalPaidAmount * 100) >= Math.round(grandTotal * 100) - 5;
+          Math.round(totalPaidAmount * 100) >= Math.round(grandTotal * 100);
 
         const isSettled = allPaid && allMoneyCovered;
 
@@ -1136,7 +1208,7 @@ export const useBillStore = create<BillStoreState>()(
     });
     const updated = get().bills.find((b) => b.id === billId);
     if (updated) {
-      BillSyncService.broadcastBillUpdate(updated);
+      BillSyncService.broadcastBillUpdate(updated, participantId);
     }
   },
 
@@ -1265,16 +1337,17 @@ export const useBillStore = create<BillStoreState>()(
         itemsShare += myClaimedUnits * item.unitPrice;
       } else if (isAssigned && assignedIds.length > 0) {
         // 2. Shared / Multi-assigned item (Splitwise/Tricount style & Manual Bill Builder):
-        // Split item total equally with cent-accuracy among assigned diners!
+        // Sort participant IDs deterministically so all devices agree on remainder-cent assignment
         claimedItemCount += 1;
+        const sortedAssignedIds = [...assignedIds].sort();
         const totalCents = Math.round(item.totalPrice * 100);
-        const count = assignedIds.length;
+        const count = sortedAssignedIds.length;
         const baseCents = Math.floor(totalCents / count);
         const remainderCents = totalCents % count;
-        let idx = assignedIds.indexOf(participantId);
+        let idx = sortedAssignedIds.indexOf(participantId);
         if (idx === -1 && isOrganizer) {
-          idx = assignedIds.indexOf(bill.organizerId);
-          if (idx === -1) idx = assignedIds.indexOf('user_me');
+          idx = sortedAssignedIds.indexOf(bill.organizerId);
+          if (idx === -1) idx = sortedAssignedIds.indexOf('user_me');
         }
         if (idx !== -1) {
           const shareCents = baseCents + (idx < remainderCents ? 1 : 0);
@@ -1287,7 +1360,7 @@ export const useBillStore = create<BillStoreState>()(
     const copertoItem = bill.items.find((it) => it.isCoperto);
     const hasClaimedItems = claimedItemCount > 0 || itemsShare > 0;
     
-    // Calculate coperto share with strict ceiling: total coperto collected across table never exceeds copertoItem.totalPrice
+    // Calculate coperto share using deterministic cent-exact integer remainder distribution across participants
     let copertoShare = 0;
     if (copertoItem && hasClaimedItems && copertoItem.totalPrice > 0) {
       const activeClaimersCount = bill.participants.filter((p) => {
@@ -1311,10 +1384,14 @@ export const useBillStore = create<BillStoreState>()(
         activeClaimersCount,
         bill.participants.length
       );
-      const fairCoperto = Math.round((copertoItem.totalPrice / divisor) * 100) / 100;
-      copertoShare = bill.copertoPerPerson !== undefined && bill.copertoPerPerson > 0
-        ? Math.min(bill.copertoPerPerson, fairCoperto)
-        : fairCoperto;
+      const copertoTotalCents = Math.round(copertoItem.totalPrice * 100);
+      const sortedParticipantIds = [...bill.participants.map((p) => p.id)].sort();
+      const myCopertoIdx = sortedParticipantIds.indexOf(participantId);
+      const baseCopertoCents = Math.floor(copertoTotalCents / divisor);
+      const remCopertoCents = copertoTotalCents % divisor;
+      const myCopertoCents =
+        baseCopertoCents + (myCopertoIdx !== -1 && myCopertoIdx < remCopertoCents ? 1 : 0);
+      copertoShare = myCopertoCents / 100;
     }
 
     const baseAmount = itemsShare + copertoShare;
@@ -1412,27 +1489,29 @@ export const useBillStore = create<BillStoreState>()(
 
   upsertBill: (incomingBill) => {
     set((state) => {
-      const existingIndex = state.bills.findIndex((b) => b.id === incomingBill.id);
+      const effectiveIncoming = BillSyncService.applyPendingLocalActor(incomingBill);
+      const existingIndex = state.bills.findIndex((b) => b.id === effectiveIncoming.id);
       if (existingIndex !== -1) {
         const existing = state.bills[existingIndex];
-        let mergedBill = BillSyncService.mergeBillSessions(existing, incomingBill);
+        let mergedBill = BillSyncService.mergeBillSessions(existing, effectiveIncoming);
 
         const hasLocalItems = Array.isArray(existing.items) && existing.items.length > 0;
-        const hasIncomingItems = Array.isArray(incomingBill.items) && incomingBill.items.length > 0;
+        const hasIncomingItems =
+          Array.isArray(effectiveIncoming.items) && effectiveIncoming.items.length > 0;
 
         // Never wipe local items if incoming cloud bill has empty items
         if (hasLocalItems && !hasIncomingItems) {
           mergedBill = {
             ...mergedBill,
             items: existing.items,
-            taxSummary: existing.taxSummary?.grandTotal ? existing.taxSummary : incomingBill.taxSummary,
-            copertoPerPerson: existing.copertoPerPerson || incomingBill.copertoPerPerson,
+            taxSummary: existing.taxSummary?.grandTotal ? existing.taxSummary : effectiveIncoming.taxSummary,
+            copertoPerPerson: existing.copertoPerPerson || effectiveIncoming.copertoPerPerson,
           };
         }
 
         // Skip state mutation if mergedBill is identical to existing (prevents multi-tab twitching & localStorage churn)
         if (
-          state.activeBillId === incomingBill.id &&
+          state.activeBillId === effectiveIncoming.id &&
           JSON.stringify(existing) === JSON.stringify(mergedBill)
         ) {
           return state;
@@ -1440,9 +1519,9 @@ export const useBillStore = create<BillStoreState>()(
 
         const updated = [...state.bills];
         updated[existingIndex] = mergedBill;
-        return { bills: updated, activeBillId: incomingBill.id };
+        return { bills: updated, activeBillId: effectiveIncoming.id };
       }
-      return { bills: [incomingBill, ...state.bills], activeBillId: incomingBill.id };
+      return { bills: [effectiveIncoming, ...state.bills], activeBillId: effectiveIncoming.id };
     });
   },
 
@@ -1686,3 +1765,8 @@ export const useBillStore = create<BillStoreState>()(
     }
   )
 );
+
+if (typeof __DEV__ !== 'undefined' && __DEV__) {
+  (globalThis as any).__QUOTA_BILL_STORE__ = useBillStore;
+  (globalThis as any).__QUOTA_BILL_SYNC__ = BillSyncService;
+}

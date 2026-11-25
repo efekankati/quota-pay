@@ -267,6 +267,7 @@ export const SplitPaymentScreen: React.FC<SplitPaymentScreenProps> = ({
         {/* Native Google Pay Button */}
         {(Platform.OS === 'android' || Platform.OS === 'web') && (
           <GooglePayButton
+            testID="payment-google-pay-btn"
             amount={share.totalDue}
             onPress={handleGooglePay}
             isLoading={isProcessing}
@@ -275,6 +276,7 @@ export const SplitPaymentScreen: React.FC<SplitPaymentScreenProps> = ({
 
         {/* Direct Italian Satispay deep link fallback */}
         <SatispayButton
+          testID="payment-satispay-btn"
           amount={share.totalDue}
           onPress={handleSatispay}
           isLoading={isProcessing}
@@ -282,6 +284,7 @@ export const SplitPaymentScreen: React.FC<SplitPaymentScreenProps> = ({
 
         {/* SEPA Instant IBAN Bank Transfer Option */}
         <TouchableOpacity
+          testID="payment-sepa-btn"
           activeOpacity={0.85}
           onPress={handleSepaTransfer}
           disabled={isProcessing}
@@ -349,6 +352,7 @@ export const SplitPaymentScreen: React.FC<SplitPaymentScreenProps> = ({
             </Text>
 
             <TouchableOpacity
+              testID="payment-copy-iban-btn"
               activeOpacity={0.8}
               onPress={handleCopyOrganizerIban}
               style={[
