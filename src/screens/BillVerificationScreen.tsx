@@ -234,7 +234,7 @@ export const BillVerificationScreen: React.FC<BillVerificationScreenProps> = ({
                   <Text style={[styles.overviewSublabel, { color: colors.textSecondary }]}>
                     {t('verifiedTotals')}
                   </Text>
-                  <Text style={[styles.overviewGrandTotal, { color: colors.accent }]}>
+                  <Text testID="verification-grand-total" style={[styles.overviewGrandTotal, { color: colors.accent }]}>
                     €{bill.taxSummary.grandTotal.toFixed(2)}
                   </Text>
                 </View>
@@ -438,12 +438,13 @@ export const BillVerificationScreen: React.FC<BillVerificationScreenProps> = ({
           <Text style={[styles.bottomTotalLabel, { color: colors.textSecondary }]} numberOfLines={1}>
             {t('verifiedTotals')}
           </Text>
-          <Text style={[styles.bottomGrandTotal, { color: colors.accent }]} numberOfLines={1}>
+          <Text testID="verification-bottom-total" style={[styles.bottomGrandTotal, { color: colors.accent }]} numberOfLines={1}>
             €{bill.taxSummary.grandTotal.toFixed(2)}
           </Text>
         </View>
 
         <TouchableOpacity
+          testID="verification-accept-btn"
           activeOpacity={0.85}
           onPress={handleAcceptAndProceed}
           style={[styles.acceptCtaBtn, { backgroundColor: colors.accent }]}

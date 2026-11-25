@@ -14,6 +14,9 @@ interface LineItemRowProps {
   selectedParticipantId: string;
   onToggleAssign: () => void;
   onChangeQuantity?: (newQuantity: number) => void;
+  rowTestID?: string;
+  plusTestID?: string;
+  minusTestID?: string;
 }
 
 export const LineItemRow: React.FC<LineItemRowProps> = ({
@@ -22,6 +25,9 @@ export const LineItemRow: React.FC<LineItemRowProps> = ({
   selectedParticipantId,
   onToggleAssign,
   onChangeQuantity,
+  rowTestID,
+  plusTestID,
+  minusTestID,
 }) => {
   const { colors } = useThemeStore();
   const { t } = useLanguageStore();
@@ -81,6 +87,7 @@ export const LineItemRow: React.FC<LineItemRowProps> = ({
 
   return (
     <TouchableOpacity
+      testID={rowTestID}
       activeOpacity={0.8}
       onPress={() => {
         lightImpact();
@@ -167,6 +174,7 @@ export const LineItemRow: React.FC<LineItemRowProps> = ({
             >
               {/* Decrement Button */}
               <TouchableOpacity
+                testID={minusTestID}
                 activeOpacity={0.7}
                 disabled={!canDecrement}
                 onPress={handleDecrement}
@@ -203,6 +211,7 @@ export const LineItemRow: React.FC<LineItemRowProps> = ({
 
               {/* Increment Button */}
               <TouchableOpacity
+                testID={plusTestID}
                 activeOpacity={0.7}
                 disabled={!canIncrement}
                 onPress={handleIncrement}

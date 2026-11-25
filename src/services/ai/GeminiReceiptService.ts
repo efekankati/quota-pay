@@ -22,10 +22,26 @@ export interface GeminiReceiptResult {
   total: number;
 }
 
+export interface LastAiParseTelemetry {
+  proxyBaseUrl: string;
+  endpoint: string;
+  modelUsed: string;
+  responseTimeMs: number;
+  parsedItemCount: number;
+  nonCopertoItemCount: number;
+  copertoTotal: number;
+  total: number;
+  restaurantName: string;
+  currency: string;
+  usage: Record<string, any> | null;
+  timestamp: string;
+}
+
 export class GeminiReceiptService {
   private static fastestProxyBaseUrl: string | null = null;
   private static dynamicOrchestratorUrls: string[] = [];
   private static lastDynamicRefreshAt: number = 0;
+  public static lastParseTelemetry: LastAiParseTelemetry | null = null;
 
   /**
    * Fetches active Cloud/Edge URLs published to Supabase `orchestrator_endpoints`
@@ -141,6 +157,11 @@ export class GeminiReceiptService {
       candidates.push('http://localhost:3000');
     }
 
+    if (typeof __DEV__ !== 'undefined' && __DEV__ && Platform.OS === 'android') {
+      candidates.push('http://127.0.0.1:3000');
+      candidates.push('http://10.0.2.2:3000');
+    }
+
     return Array.from(new Set(candidates));
   }
 
@@ -218,6 +239,7 @@ export class GeminiReceiptService {
       const endpoint = `${baseUrl}/api/ai/parse-receipt`;
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 28000);
+      const reqStart = Date.now();
       try {
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -252,6 +274,22 @@ export class GeminiReceiptService {
         }
 
         this.fastestProxyBaseUrl = baseUrl;
+        const telemetry: LastAiParseTelemetry = {
+          proxyBaseUrl: baseUrl,
+          endpoint,
+          modelUsed: String(data?.modelUsed || 'unknown'),
+          responseTimeMs: Date.now() - reqStart,
+          parsedItemCount: parsed.items.length,
+          nonCopertoItemCount: parsed.items.filter((it) => !it.isCoperto).length,
+          copertoTotal: parsed.copertoTotal,
+          total: parsed.total,
+          restaurantName: parsed.restaurantName,
+          currency: parsed.currency || 'EUR',
+          usage: data?.usage || null,
+          timestamp: new Date().toISOString(),
+        };
+        this.lastParseTelemetry = telemetry;
+        (globalThis as any).__QUOTA_LAST_AI_PARSE__ = telemetry;
         return parsed;
       } catch (err: any) {
         clearTimeout(timeoutId);

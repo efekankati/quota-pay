@@ -15,8 +15,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.android_emulator_fleet import (  # noqa: E402
+    AIProxyManager,
     ALL_PHONE_SLOTS,
     DEFAULT_DNS_SERVERS,
+    DEFAULT_GUEST_RAM_MB,
     GUEST_HEAP_MB,
     GUEST_SYSIMAGE_REL,
     ORGANIZER_HEAP_MB,
@@ -30,6 +32,14 @@ from scripts.android_emulator_fleet import (  # noqa: E402
     ensure_isolated_avds,
     run_cmd,
     scan_logcat_lines_for_oom,
+)
+from e2e.e2e_telemetry import (  # noqa: E402
+    E2EEvent,
+    _E2EStageTracker,
+)
+from e2e.five_phone_android_e2e import (  # noqa: E402
+    resolve_cli_topology,
+    resolve_receipt_fixture,
 )
 
 
@@ -309,10 +319,13 @@ class FleetOptimizationTests(unittest.TestCase):
                 ["Quota_Phone_1", "Quota_Phone_2_Visible", "Quota_Phone_3_Visible", "Quota_Phone_4_Visible"],
             )
 
+            self.assertEqual(VISIBLE_GUEST_RAM_MB, DEFAULT_GUEST_RAM_MB)
+            self.assertEqual(DEFAULT_GUEST_RAM_MB, 1024)
             for avd_name in ensured_vis:
                 cfg = _parse_ini_kv(avd_dir / f"{avd_name}.avd" / "config.ini")
-                self.assertEqual(cfg["hw.ramSize"], "1536")
-                self.assertEqual(cfg["vm.heapSize"], str(ORGANIZER_HEAP_MB))
+                is_org = avd_name == "Quota_Phone_1"
+                self.assertEqual(cfg["hw.ramSize"], "1536" if is_org else "1024")
+                self.assertEqual(cfg["vm.heapSize"], str(ORGANIZER_HEAP_MB if is_org else GUEST_HEAP_MB))
                 self.assertEqual(cfg["tag.id"], "default")
                 self.assertIn("android-33\\default\\x86_64", cfg["image.sysdir.1"])
 
@@ -406,6 +419,131 @@ class FleetOptimizationTests(unittest.TestCase):
         with mock.patch("scripts.android_emulator_fleet.subprocess.run", side_effect=exc):
             with self.assertRaises(subprocess.TimeoutExpired):
                 run_cmd(["adb", "shell", "ping"], timeout=6, check=True)
+
+    def test_ai_proxy_manager_reuse_and_managed_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "server" / "dist").mkdir(parents=True, exist_ok=True)
+            (root / "server" / "dist" / "index.js").write_text("console.log('ok');", encoding="utf-8")
+
+            # Case 1: Existing healthy proxy -> reused (started_by_runner=False), stop() leaves it untouched
+            mgr_reuse = AIProxyManager(
+                root,
+                env_map={"GEMINI_API_KEY": "test-key", "EXPO_PUBLIC_AI_PROXY_URL": "http://192.168.178.128:3000"},
+                log_dir=root / "logs",
+                port=3000,
+                quiet_stdout=True,
+            )
+            with mock.patch.object(
+                AIProxyManager,
+                "probe_health",
+                return_value=(True, 12.3, {"status": "ok"}),
+            ), mock.patch("scripts.android_emulator_fleet.subprocess.Popen") as m_popen:
+                self.assertIn("http://192.168.178.128", mgr_reuse.candidate_urls())
+                info = mgr_reuse.ensure_running()
+                self.assertFalse(info["started_by_runner"])
+                self.assertFalse(mgr_reuse.started_by_runner)
+                self.assertEqual(info["proxy_url"], "http://192.168.178.128")
+                m_popen.assert_not_called()
+                with mock.patch("scripts.android_emulator_fleet.subprocess.run") as m_kill:
+                    mgr_reuse.stop()
+                    m_kill.assert_not_called()
+
+            # Case 2: No proxy healthy -> starts managed node subprocess, waits for 200 OK, stop() cleans up
+            mgr_start = AIProxyManager(
+                root,
+                env_map={"GEMINI_API_KEY": "test-key"},
+                log_dir=root / "logs2",
+                port=3055,
+                quiet_stdout=True,
+            )
+            fake_proc = mock.Mock(pid=4242, poll=lambda: None)
+            num_cands = len(mgr_start.candidate_urls())
+            with mock.patch.object(
+                AIProxyManager,
+                "probe_health",
+                side_effect=[(False, None, None)] * num_cands + [(True, 8.4, {"status": "ok"})],
+            ), mock.patch("scripts.android_emulator_fleet.subprocess.Popen", return_value=fake_proc) as m_popen:
+                info2 = mgr_start.ensure_running()
+                self.assertTrue(info2["started_by_runner"])
+                self.assertTrue(mgr_start.started_by_runner)
+                self.assertEqual(info2["proxy_url"], "http://127.0.0.1:3055")
+                self.assertEqual(m_popen.call_args.args[0][0], "node")
+                self.assertEqual(m_popen.call_args.kwargs["env"]["PORT"], "3055")
+
+                with mock.patch("scripts.android_emulator_fleet.subprocess.run") as m_stop_run:
+                    mgr_start.stop()
+                    self.assertFalse(mgr_start.started_by_runner)
+                    if os.name == "nt":
+                        m_stop_run.assert_called_once()
+                        self.assertIn("4242", m_stop_run.call_args.args[0])
+                    else:
+                        fake_proc.terminate.assert_called_once()
+
+    def test_inject_receipt_image_and_reverse_proxy(self) -> None:
+        sdk = Path("C:/fake_sdk")
+        slot = ALL_PHONE_SLOTS[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            img_path = Path(tmp) / "receipt.jpg"
+            img_path.write_bytes(b"\xff\xd8\xff\xe0fakejpeg")
+            with mock.patch("scripts.android_emulator_fleet.resolve_android_sdk", return_value=sdk), mock.patch(
+                "scripts.android_emulator_fleet.resolve_adb_exe", return_value=sdk / "platform-tools" / "adb.exe"
+            ), mock.patch(
+                "scripts.android_emulator_fleet.resolve_emulator_exe", return_value=sdk / "emulator" / "emulator.exe"
+            ):
+                fleet = AndroidEmulatorFleet(PROJECT_ROOT, slots=[slot], quiet_stdout=True)
+                with mock.patch("scripts.android_emulator_fleet.run_cmd") as m_run:
+                    m_run.side_effect = [
+                        mock.Mock(returncode=0, stdout="", stderr=""),  # reverse
+                        mock.Mock(returncode=0, stdout="", stderr=""),  # rm -f
+                        mock.Mock(returncode=0, stdout="", stderr=""),  # mkdir -p
+                        mock.Mock(returncode=0, stdout="1 file pushed", stderr=""),  # push
+                        mock.Mock(returncode=0, stdout="", stderr=""),  # touch
+                        mock.Mock(returncode=0, stdout="", stderr=""),  # content call scan_file
+                        mock.Mock(returncode=0, stdout="", stderr=""),  # broadcast
+                        mock.Mock(
+                            returncode=0,
+                            stdout="Row: 0 _id=99, _display_name=quota_e2e_receipt.jpg, _data=/storage/emulated/0/Pictures/quota_e2e_receipt.jpg\n",
+                            stderr="",
+                        ),
+                    ]
+                    fleet.setup_ai_proxy_reverse(slot, port=3000)
+                    remote = fleet.inject_receipt_image(slot, img_path)
+                    self.assertEqual(remote, "/sdcard/Pictures/quota_e2e_receipt.jpg")
+                    cmds = [c.args[0] for c in m_run.call_args_list]
+                    self.assertIn("reverse", cmds[0])
+                    self.assertIn("tcp:3000", cmds[0])
+                    self.assertTrue(any("rm -f /sdcard/Pictures/quota_e2e_receipt.*" in " ".join(c) for c in cmds))
+                    self.assertTrue(any("push" in c and "/sdcard/Pictures/quota_e2e_receipt.jpg" in c for c in cmds))
+                    self.assertTrue(any("scan_file" in c for c in cmds))
+                    self.assertTrue(any("MEDIA_SCANNER_SCAN_FILE" in " ".join(c) for c in cmds))
+
+    def test_scenario_and_receipt_fixture_resolution(self) -> None:
+        self.assertEqual(resolve_cli_topology("4-visible", None, None), (3, False, "4-visible"))
+        self.assertEqual(resolve_cli_topology("10-headless", None, None), (9, True, "10-headless"))
+        with self.assertRaises(SystemExit):
+            resolve_cli_topology("4-visible", 9, None)
+        with self.assertRaises(SystemExit):
+            resolve_cli_topology("4-visible", None, True)
+
+        p4 = resolve_receipt_fixture("__AUTO__", 4)
+        p10 = resolve_receipt_fixture("__AUTO__", 10)
+        self.assertEqual(p4.name, "receipt_4p.jpg")
+        self.assertEqual(p10.name, "receipt_10p.jpg")
+        self.assertTrue(p4.exists())
+        self.assertTrue(p10.exists())
+        with self.assertRaises(SystemExit):
+            resolve_receipt_fixture("does_not_exist_receipt.jpg", 4)
+
+    def test_stage_tracker_does_not_revert_passed_stage_on_trailing_event(self) -> None:
+        tracker = _E2EStageTracker(run_id="r-test", num_guests=3, headless_guests=False)
+        tracker.update(E2EEvent(stage_id="audit_and_cleanup", status="RUNNING", step="verifying"))
+        tracker.update(E2EEvent(stage_id="audit_and_cleanup", status="PASSED", step="verified", duration_ms=123.0))
+        tracker.update(E2EEvent(stage_id="audit_and_cleanup", status="RUNNING", step="ai_proxy_stopped"))
+        snap = tracker.snapshot()
+        stage8 = next(s for s in snap["stages"] if s["stage_id"] == "audit_and_cleanup")
+        self.assertEqual(stage8["status"], "PASSED")
+        self.assertEqual(stage8["step"], "verified")
 
 
 if __name__ == "__main__":

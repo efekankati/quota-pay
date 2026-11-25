@@ -49,7 +49,7 @@ E2E_PIPELINE_STAGES: List[tuple[str, str]] = [
     ("fleet_bootstrap", "1. Fleet & Metro Bootstrap"),
     ("emulator_boot", "2. Emulator Boot & ADB Ready"),
     ("apk_deploy", "3. APK Deploy & Debug Host"),
-    ("organizer_bill", "4. Organizer Manual Bill"),
+    ("organizer_bill", "4. Organizer Bill Creation"),
     ("guests_join_sync", "5. Guests Join & Live Sync"),
     ("claims_and_conflicts", "6. Conflict Barriers & Claims"),
     ("payments_settlement", "7. Payments & Settlement"),
@@ -280,7 +280,7 @@ class _E2EStageTracker:
         slot = self.stages.get(event.stage_id)
         if slot is None:
             return
-        if slot["status"] == "FAILED" and event.status == "RUNNING":
+        if slot["status"] in ("PASSED", "FAILED") and event.status == "RUNNING":
             return
         slot["status"] = event.status
         slot["step"] = event.step
@@ -855,6 +855,8 @@ def write_markdown_audit_report(
 
     run_id = report.get("run_id") or snapshot.get("run_id") or "-"
     status = report.get("status", snapshot.get("status", "UNKNOWN"))
+    scenario = report.get("scenario") or "-"
+    bill_mode = report.get("bill_mode") or "manual"
     num_guests = int(report.get("num_guests", snapshot.get("num_guests", 0)))
     total_diners = int(report.get("total_diners", snapshot.get("total_diners", 1 + num_guests)))
     headless_guests = bool(report.get("headless_guests", snapshot.get("headless_guests", True)))
@@ -870,6 +872,7 @@ def write_markdown_audit_report(
         "",
         f"- **Run ID:** `{run_id}`",
         f"- **Status:** `{status}`",
+        f"- **Scenario / Bill Mode:** `{scenario}` / `{bill_mode}`",
         f"- **Diners:** `1 Organizer + {num_guests} Guest(s) ({total_diners} total)`",
         f"- **Window Mode:** `{mode_label}`",
         f"- **Random Seed:** `{seed}`",
@@ -985,6 +988,33 @@ def write_markdown_audit_report(
                     f"| `{avd}` (`{serial}`) | `{q.get('tag_id', '-')}` | `{ram_col}` | `{host_col}` | `{snap_str}` | `{oom_str}` |"
                 )
 
+    ai_proxy_info = report.get("ai_proxy") or {}
+    ai_parse_info = report.get("ai_parse_telemetry") or {}
+    if bill_mode == "analyze-receipt" or ai_proxy_info or ai_parse_info:
+        lines.extend(
+            [
+                "",
+                "### AI Receipt OCR Telemetry",
+                "",
+            ]
+        )
+        if report.get("receipt_image_path"):
+            lines.append(f"- **Receipt Fixture / Image:** `{report['receipt_image_path']}`")
+        if ai_proxy_info:
+            lines.append(
+                f"- **AI Proxy:** `{ai_proxy_info.get('proxy_url', '-')}` "
+                f"(started_by_runner=`{ai_proxy_info.get('started_by_runner', False)}`, "
+                f"health=`{ai_proxy_info.get('health_ms', '-')}ms`)"
+            )
+        if ai_parse_info:
+            lines.append(
+                f"- **Gemini Vision Parse:** `model={ai_parse_info.get('model_used', '-')}`, "
+                f"`response_time_ms={ai_parse_info.get('response_time_ms', '-')}`, "
+                f"`parsed_items={ai_parse_info.get('parsed_item_count', '-')}`, "
+                f"`coperto_total=EUR {ai_parse_info.get('coperto_total', '-')}`, "
+                f"`grand_total=EUR {ai_parse_info.get('total', '-')}`"
+            )
+
     lines.extend(
         [
             "",
@@ -1010,8 +1040,7 @@ def write_markdown_audit_report(
     if rand_alloc:
         lines.append(
             f"- **Randomized Allocations (`seed={rand_alloc.get('seed')}`):** "
-            f"item 4 single=`{rand_alloc.get('item_4_single')}`, "
-            f"multi-qty=`{json.dumps(rand_alloc.get('multi_qty_items', {}))}`"
+            f"`{json.dumps(rand_alloc)}`"
         )
 
     lines.extend(

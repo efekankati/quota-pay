@@ -27,6 +27,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,10 +48,13 @@ from e2e.e2e_telemetry import (  # noqa: E402
     write_markdown_audit_report,
 )
 from scripts.android_emulator_fleet import (  # noqa: E402
+    AIProxyManager,
     AndroidEmulatorFleet,
+    DEFAULT_AI_PROXY_PORT,
     DEFAULT_BOOT_BATCH_SIZE,
     DEFAULT_GUEST_RAM_MB,
     DEFAULT_PHONE_SLOTS,
+    PACKAGE_NAME,
     PhoneSlot,
     VISIBLE_GUEST_RAM_MB,
     build_phone_slots,
@@ -61,6 +65,12 @@ from scripts.android_emulator_fleet import (  # noqa: E402
 
 MAX_HEADLESS_GUESTS = 9
 MAX_VISIBLE_GUESTS = 3
+SCENARIO_PRESETS: Dict[str, Tuple[int, bool]] = {
+    "4-visible": (3, False),
+    "10-headless": (9, True),
+}
+FIXTURES_DIR = PROJECT_ROOT / "e2e" / "fixtures"
+SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 ALL_GUEST_NAMES = ["Marco", "Sara", "Elena", "Davide", "Giulia", "Luca", "Chiara", "Matteo", "Sofia"]
 
 RECEIPT_ITEMS_SPEC = [
@@ -97,6 +107,89 @@ def validate_guest_config(num_guests: int, headless_guests: bool) -> None:
         flush=True,
     )
     raise SystemExit(2)
+
+
+def resolve_cli_topology(
+    scenario: Optional[str],
+    guests: Optional[int],
+    headless_guests: Optional[bool],
+) -> Tuple[int, bool, Optional[str]]:
+    """Resolve (num_guests, headless_guests, scenario_slug) and reject conflicting CLI flags."""
+    if scenario is not None:
+        if scenario not in SCENARIO_PRESETS:
+            print(
+                f"ERROR: Unknown --scenario '{scenario}'. Expected '4-visible' or '10-headless'.",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise SystemExit(2)
+        exp_guests, exp_headless = SCENARIO_PRESETS[scenario]
+        if guests is not None and guests != exp_guests:
+            print(
+                f"ERROR: Cannot combine --scenario {scenario} with --guests {guests} (expected {exp_guests}).",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise SystemExit(2)
+        if headless_guests is not None and headless_guests != exp_headless:
+            print(
+                f"ERROR: Cannot combine --scenario {scenario} with conflicting window mode flag.",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise SystemExit(2)
+        return exp_guests, exp_headless, scenario
+
+    eff_guests = guests if guests is not None else 4
+    eff_headless = headless_guests if headless_guests is not None else True
+    validate_guest_config(eff_guests, eff_headless)
+    return eff_guests, eff_headless, None
+
+
+def resolve_receipt_fixture(raw_arg: str, total_diners: int) -> Path:
+    """Resolve an explicit receipt image path or auto-select from e2e/fixtures/."""
+    if raw_arg == "__AUTO__":
+        filename = "receipt_4p.jpg" if total_diners <= 4 else "receipt_10p.jpg"
+        candidate = FIXTURES_DIR / filename
+        if not candidate.exists():
+            print(
+                (
+                    f"ERROR: Auto-selected receipt fixture not found at '{candidate}'.\n"
+                    f"Generate fixtures with 'python e2e/fixtures/generate_fixtures.py' or pass an explicit image path: "
+                    f"--analyze-receipt path/to/receipt.jpg"
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+            raise SystemExit(2)
+        return candidate
+
+    raw_path = Path(raw_arg)
+    if raw_path.is_absolute():
+        resolved = raw_path
+    elif (Path.cwd() / raw_path).exists():
+        resolved = Path.cwd() / raw_path
+    else:
+        resolved = PROJECT_ROOT / raw_path
+
+    if not resolved.exists() or not resolved.is_file():
+        print(
+            (
+                f"ERROR: Receipt image not found: '{raw_arg}' (resolved to '{resolved}').\n"
+                f"See e2e/fixtures/README.md for expected fixture filenames."
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(2)
+    if resolved.suffix.lower() not in SUPPORTED_IMAGE_EXTS:
+        print(
+            f"ERROR: Unsupported receipt image extension '{resolved.suffix}'. Supported: {sorted(SUPPORTED_IMAGE_EXTS)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(2)
+    return resolved
 
 
 def load_env_file(env_path: Path) -> Dict[str, str]:
@@ -551,14 +644,389 @@ def organizer_create_manual_bill(
     return bill_id
 
 
-def wait_for_bill_hydration(driver: ExpoAgentDeviceDriver, bill_id: str, timeout_s: float = 45.0) -> Dict[str, Any]:
+_BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+
+
+def _parse_bounds_center(bounds_str: str) -> Optional[Tuple[int, int, int, int, int, int]]:
+    m = _BOUNDS_RE.search(bounds_str or "")
+    if not m:
+        return None
+    x1, y1, x2, y2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+    w = x2 - x1
+    h = y2 - y1
+    if w <= 0 or h <= 0:
+        return None
+    return (x1 + x2) // 2, (y1 + y2) // 2, x1, y1, x2, y2
+
+
+def pick_receipt_photo_via_uiautomator(
+    fleet: AndroidEmulatorFleet,
+    slot: PhoneSlot,
+    timeout_s: float = 30.0,
+) -> None:
+    """Automate Android Photo Picker / DocumentsUI via `uiautomator dump` + `adb shell input tap`."""
+    deadline = time.time() + timeout_s
+    tapped_photo = False
+    opened_folder = False
+    last_xml = ""
+
+    try:
+        while time.time() < deadline:
+            if tapped_photo:
+                focus_proc = run_cmd(
+                    [str(fleet.adb_exe), "-s", slot.serial, "shell", "dumpsys", "window", "displays"],
+                    timeout=10,
+                    check=False,
+                )
+                focus_txt = focus_proc.stdout or ""
+                if (
+                    f"{PACKAGE_NAME}/.MainActivity" in focus_txt
+                    and "mCurrentFocus=" in focus_txt
+                    and f"mCurrentFocus=Window{{" in focus_txt
+                    and PACKAGE_NAME in focus_txt.split("mCurrentFocus=", 1)[1].splitlines()[0]
+                ):
+                    return
+
+            dump_proc = run_cmd(
+                [str(fleet.adb_exe), "-s", slot.serial, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"],
+                timeout=12,
+                check=False,
+            )
+            if dump_proc.returncode != 0:
+                time.sleep(0.6)
+                continue
+
+            cat_proc = run_cmd(
+                [str(fleet.adb_exe), "-s", slot.serial, "shell", "cat", "/sdcard/window_dump.xml"],
+                timeout=12,
+                check=False,
+            )
+            xml_str = (cat_proc.stdout or "").strip()
+            if not xml_str.startswith("<"):
+                time.sleep(0.6)
+                continue
+            last_xml = xml_str
+
+            try:
+                root = ET.fromstring(xml_str)
+            except ET.ParseError:
+                time.sleep(0.5)
+                continue
+
+            nodes = list(root.iter("node"))
+            packages = {n.attrib.get("package", "") for n in nodes}
+
+            # 0. Dismiss benign Android emulator crash/ANR dialogs (e.g. "Bluetooth keeps stopping")
+            aerr_tap: Optional[Tuple[int, int]] = None
+            for n in nodes:
+                rid = n.attrib.get("resource-id", "").lower()
+                if rid in ("android:id/aerr_close", "android:id/aerr_wait") and n.attrib.get("clickable") == "true":
+                    parsed = _parse_bounds_center(n.attrib.get("bounds", ""))
+                    if parsed:
+                        aerr_tap = (parsed[0], parsed[1])
+                        break
+            if aerr_tap is not None:
+                run_cmd(
+                    [str(fleet.adb_exe), "-s", slot.serial, "shell", "input", "tap", str(aerr_tap[0]), str(aerr_tap[1])],
+                    timeout=10,
+                    check=True,
+                )
+                time.sleep(0.9)
+                continue
+
+            if tapped_photo and PACKAGE_NAME in packages and not any(
+                "permissioncontroller" in p or "documentsui" in p or "providers.media" in p
+                for p in packages
+            ):
+                return
+
+            # 1. Runtime permissions prompt (Allow / Allow all)
+            perm_tap: Optional[Tuple[int, int]] = None
+            for n in nodes:
+                pkg = n.attrib.get("package", "")
+                rid = n.attrib.get("resource-id", "").lower()
+                txt = n.attrib.get("text", "").strip().lower()
+                if "permissioncontroller" in pkg or "permission_allow" in rid:
+                    if (
+                        "permission_allow" in rid
+                        or txt in ("allow", "allow all", "while using the app", "only this time")
+                    ):
+                        parsed = _parse_bounds_center(n.attrib.get("bounds", ""))
+                        if parsed:
+                            perm_tap = (parsed[0], parsed[1])
+                            break
+            if perm_tap is not None:
+                run_cmd(
+                    [str(fleet.adb_exe), "-s", slot.serial, "shell", "input", "tap", str(perm_tap[0]), str(perm_tap[1])],
+                    timeout=10,
+                    check=True,
+                )
+                time.sleep(0.9)
+                continue
+
+            # 2. Multi-select confirmation button (Done / Add / Select) after tapping thumbnail
+            if tapped_photo:
+                confirm_tap: Optional[Tuple[int, int]] = None
+                for n in nodes:
+                    rid = n.attrib.get("resource-id", "").lower()
+                    txt = n.attrib.get("text", "").strip().lower()
+                    desc = n.attrib.get("content-desc", "").strip().lower()
+                    clickable = n.attrib.get("clickable") == "true"
+                    if not clickable:
+                        continue
+                    if (
+                        "button_add" in rid
+                        or "action_menu_done" in rid
+                        or txt.startswith("add")
+                        or txt in ("done", "select", "aggiungi", "fatto")
+                        or desc in ("done", "add", "select")
+                    ):
+                        parsed = _parse_bounds_center(n.attrib.get("bounds", ""))
+                        if parsed:
+                            confirm_tap = (parsed[0], parsed[1])
+                            break
+                if confirm_tap is not None:
+                    run_cmd(
+                        [str(fleet.adb_exe), "-s", slot.serial, "shell", "input", "tap", str(confirm_tap[0]), str(confirm_tap[1])],
+                        timeout=10,
+                        check=True,
+                    )
+                    time.sleep(1.0)
+                    continue
+                time.sleep(0.6)
+                continue
+
+            # 3. Direct match on injected filename `quota_e2e_receipt`
+            chosen_tap: Optional[Tuple[int, int]] = None
+            for n in nodes:
+                txt = n.attrib.get("text", "").lower()
+                desc = n.attrib.get("content-desc", "").lower()
+                if "quota_e2e_receipt" in txt or "quota_e2e_receipt" in desc:
+                    parsed = _parse_bounds_center(n.attrib.get("bounds", ""))
+                    if parsed:
+                        chosen_tap = (parsed[0], parsed[1])
+                        break
+
+            # 4. Photo Picker / DocumentsUI thumbnail nodes
+            if chosen_tap is None:
+                for n in nodes:
+                    rid = n.attrib.get("resource-id", "").lower()
+                    desc = n.attrib.get("content-desc", "").lower()
+                    if (
+                        "icon_thumbnail" in rid
+                        or "icon_thumb" in rid
+                        or "thumbnail" in rid
+                        or "photo taken" in desc
+                    ):
+                        parsed = _parse_bounds_center(n.attrib.get("bounds", ""))
+                        if parsed:
+                            cx, cy, x1, y1, x2, y2 = parsed
+                            if cy > 180 and (x2 - x1) >= 60 and (y2 - y1) >= 60:
+                                chosen_tap = (cx, cy)
+                                break
+
+            # 5. DocumentsUI folder navigation fallback ("Pictures" / "Images")
+            if chosen_tap is None and not opened_folder:
+                for n in nodes:
+                    txt = n.attrib.get("text", "").strip().lower()
+                    if txt in ("pictures", "images"):
+                        parsed = _parse_bounds_center(n.attrib.get("bounds", ""))
+                        if parsed:
+                            run_cmd(
+                                [str(fleet.adb_exe), "-s", slot.serial, "shell", "input", "tap", str(parsed[0]), str(parsed[1])],
+                                timeout=10,
+                                check=True,
+                            )
+                            opened_folder = True
+                            time.sleep(1.0)
+                            break
+                if opened_folder:
+                    continue
+
+            # 6. Generic RecyclerView/GridView tile fallback in Photo Picker
+            if chosen_tap is None and any("providers.media" in p or "documentsui" in p for p in packages):
+                skip_texts = {"photos", "albums", "collections", "search", "cancel", "allow", "pictures", "images"}
+                for n in nodes:
+                    if n.attrib.get("clickable") != "true":
+                        continue
+                    txt = n.attrib.get("text", "").strip().lower()
+                    if txt in skip_texts:
+                        continue
+                    parsed = _parse_bounds_center(n.attrib.get("bounds", ""))
+                    if parsed:
+                        cx, cy, x1, y1, x2, y2 = parsed
+                        if (x2 - x1) >= 100 and (y2 - y1) >= 100 and 220 <= cy <= 1150:
+                            chosen_tap = (cx, cy)
+                            break
+
+            if chosen_tap is not None:
+                run_cmd(
+                    [str(fleet.adb_exe), "-s", slot.serial, "shell", "input", "tap", str(chosen_tap[0]), str(chosen_tap[1])],
+                    timeout=10,
+                    check=True,
+                )
+                tapped_photo = True
+                time.sleep(1.5)
+                continue
+
+            time.sleep(0.7)
+
+        raise TimeoutError(
+            f"Timed out automating native Android Photo Picker on {slot.serial} "
+            f"(tapped_photo={tapped_photo}, last_xml_snippet={last_xml[:800]!r})"
+        )
+    finally:
+        run_cmd(
+            [str(fleet.adb_exe), "-s", slot.serial, "shell", "rm", "-f", "/sdcard/window_dump.xml"],
+            timeout=10,
+            check=False,
+        )
+
+
+def organizer_analyze_receipt_bill(
+    org: ExpoAgentDeviceDriver,
+    fleet: AndroidEmulatorFleet,
+    org_slot: PhoneSlot,
+    receipt_image_path: Path,
+    ai_proxy: AIProxyManager,
+    supabase_url: str,
+    anon_key: str,
+) -> Tuple[str, Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """Drive Organizer upload -> Photo Picker -> Gemini Vision OCR -> Verification -> Itemizer -> Summary."""
+    org.eval_js("globalThis.__QUOTA_LAST_AI_PARSE__ = null")
+    org.record("step_1_ocr", f"Opening gallery picker for {receipt_image_path.name}")
+    org.tap("fab-trigger")
+    org.wait_for_testid("fab-gallery-btn", timeout_s=15)
+    org.tap("fab-gallery-btn")
+
+    pick_receipt_photo_via_uiautomator(fleet, org_slot, timeout_s=30.0)
+    org.record("photo_picked", f"Selected {receipt_image_path.name} in Android Photo Picker")
+
+    # Wait for either BillVerificationScreen OR an error alert dialog
+    ocr_deadline = time.time() + 75.0
+    while time.time() < ocr_deadline:
+        if org.find_node("verification-accept-btn") is not None:
+            break
+        if org.find_node("alert-modal-btn-0") is not None:
+            title_txt = org.get_node_text("alert-modal-title") if org.find_node("alert-modal-title") else ""
+            msg_txt = org.get_node_text("alert-modal-message") if org.find_node("alert-modal-message") else ""
+            proxy_tail = ai_proxy.read_log_tail(1500)
+            raise RuntimeError(
+                f"Receipt AI OCR alert on Phone 1: {title_txt} — {msg_txt}"
+                + (f"\n[ai_proxy.log tail]:\n{proxy_tail}" if proxy_tail else "")
+            )
+        time.sleep(0.8)
+    else:
+        proxy_tail = ai_proxy.read_log_tail(1500)
+        raise TimeoutError(
+            "Timed out waiting for Gemini Vision OCR to reach BillVerificationScreen"
+            + (f"\n[ai_proxy.log tail]:\n{proxy_tail}" if proxy_tail else "")
+        )
+
+    verification_total_txt = org.get_node_text("verification-grand-total")
+    raw_telemetry = org.eval_js("JSON.stringify(globalThis.__QUOTA_LAST_AI_PARSE__ || null)")
+    if not isinstance(raw_telemetry, dict):
+        raw_telemetry = {}
+    ai_parse_telemetry: Dict[str, Any] = {
+        "proxy_base_url": raw_telemetry.get("proxyBaseUrl") or ai_proxy.proxy_url,
+        "endpoint": raw_telemetry.get("endpoint"),
+        "model_used": raw_telemetry.get("modelUsed", "unknown"),
+        "response_time_ms": raw_telemetry.get("responseTimeMs"),
+        "parsed_item_count": raw_telemetry.get("parsedItemCount"),
+        "non_coperto_item_count": raw_telemetry.get("nonCopertoItemCount"),
+        "coperto_total": raw_telemetry.get("copertoTotal"),
+        "total": raw_telemetry.get("total"),
+        "restaurant_name": raw_telemetry.get("restaurantName"),
+        "currency": raw_telemetry.get("currency"),
+        "usage": raw_telemetry.get("usage"),
+    }
+    org.record(
+        "ai_ocr_parsed",
+        f"model={ai_parse_telemetry['model_used']} time={ai_parse_telemetry['response_time_ms']}ms "
+        f"items={ai_parse_telemetry['parsed_item_count']} total={verification_total_txt}",
+    )
+
+    org.tap("verification-accept-btn")
+    org.wait_for_testid("itemizer-confirm-share-btn", timeout_s=25)
+
+    bill_id = org.eval_js("JSON.stringify(globalThis.__QUOTA_BILL_STORE__?.getState()?.activeBillId || '')")
+    if not bill_id or not isinstance(bill_id, str):
+        raise RuntimeError(f"Failed to read parsed activeBillId from Phone 1: {bill_id!r}")
+
+    bill = org.read_store_bill(bill_id)
+    if not bill or not isinstance(bill, dict):
+        raise RuntimeError(f"Parsed bill {bill_id} missing from Organizer store")
+    non_coperto = [it for it in bill.get("items", []) if not it.get("isCoperto")]
+    if not non_coperto:
+        raise RuntimeError(f"Parsed bill {bill_id} contains zero non-coperto items: {bill}")
+
+    # Organizer claims 1 item so Organizer has a non-zero share before sharing
+    single_indices = [idx for idx, it in enumerate(non_coperto) if int(it.get("quantity") or 1) == 1]
+    if single_indices and len(non_coperto) >= 2:
+        org_idx = single_indices[0]
+        org_is_fully_locked = True
+        org.tap(f"itemizer-item-row-{org_idx}")
+    else:
+        org_idx = 0
+        qty0 = int(non_coperto[0].get("quantity") or 1)
+        if qty0 > 1:
+            org_is_fully_locked = False
+            org.tap("itemizer-item-plus-0")
+        else:
+            org_is_fully_locked = True
+            org.tap("itemizer-item-row-0")
+
+    org_share_txt = ""
+    share_deadline = time.time() + 5.0
+    while time.time() < share_deadline:
+        org_share_txt = org.get_node_text("itemizer-organizer-share")
+        cents = _parse_euro_cents(org_share_txt)
+        if cents is not None and cents > 0:
+            break
+        time.sleep(0.3)
+    if (_parse_euro_cents(org_share_txt) or 0) <= 0:
+        raise AssertionError(f"Expected positive organizer share after claiming item {org_idx}, got {org_share_txt!r}")
+
+    org.tap("itemizer-confirm-share-btn")
+    org.wait_for_testid("summary-collected-text", timeout_s=45)
+
+    # Confirm bill row landed in Supabase before guests open deep links
+    cloud_deadline = time.time() + 25.0
+    while time.time() < cloud_deadline:
+        sb_state = fetch_supabase_state(supabase_url, anon_key, bill_id)
+        if sb_state.get("bill_row") is not None:
+            break
+        time.sleep(0.7)
+    else:
+        raise TimeoutError(f"Published scanned bill {bill_id} never appeared in Supabase `bills` table")
+
+    published_bill = org.read_store_bill(bill_id)
+    assert published_bill is not None
+    org.record("bill_published", f"bill_id={bill_id} total={verification_total_txt} org_share={org_share_txt}")
+    org_claim_meta = {
+        "org_idx": org_idx,
+        "is_fully_locked": org_is_fully_locked,
+        "org_item_name": non_coperto[org_idx].get("name"),
+        "verification_total_text": verification_total_txt,
+    }
+    return bill_id, published_bill, ai_parse_telemetry, org_claim_meta
+
+
+def wait_for_bill_hydration(
+    driver: ExpoAgentDeviceDriver,
+    bill_id: str,
+    *,
+    expected_non_coperto_count: int,
+    expected_has_coperto: bool,
+    timeout_s: float = 45.0,
+) -> Dict[str, Any]:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         bill = driver.read_store_bill(bill_id)
         if bill and isinstance(bill, dict):
             non_coperto = [it for it in bill.get("items", []) if not it.get("isCoperto")]
             has_coperto = any(it.get("isCoperto") for it in bill.get("items", []))
-            if len(non_coperto) == len(RECEIPT_ITEMS_SPEC) and has_coperto:
+            if len(non_coperto) == expected_non_coperto_count and (not expected_has_coperto or has_coperto):
                 return bill
         time.sleep(1.0)
     raise TimeoutError(f"Bill {bill_id} did not sync all items from Supabase on {driver.slot.serial}")
@@ -643,6 +1111,9 @@ def run_e2e(
     seed: int,
     keep_alive_on_fail: bool,
     apk_path: Path,
+    scenario: Optional[str] = None,
+    bill_mode: str = "manual",
+    receipt_image_path: Optional[Path] = None,
     no_tui: bool = False,
     enable_ui: bool = False,
     ui_port: int = 8765,
@@ -656,31 +1127,41 @@ def run_e2e(
     guest_gpu: str = "swiftshader_indirect",
 ) -> Dict[str, Any]:
     validate_guest_config(num_guests, headless_guests)
-    resolved_guest_ram = (
-        guest_ram_mb
-        if guest_ram_mb is not None
-        else (DEFAULT_GUEST_RAM_MB if headless_guests else VISIBLE_GUEST_RAM_MB)
-    )
+    if bill_mode not in ("manual", "analyze-receipt"):
+        raise ValueError(f"Unsupported bill_mode: {bill_mode!r}")
+    resolved_guest_ram = guest_ram_mb if guest_ram_mb is not None else DEFAULT_GUEST_RAM_MB
     guest_ram_mb = resolved_guest_ram
     slots = build_phone_slots(num_guests, headless_guests=headless_guests)
     active_guest_names = list(ALL_GUEST_NAMES[:num_guests])
     total_diners = 1 + num_guests
+    scenario_slug = scenario or f"{total_diners}-{'headless' if headless_guests else 'visible'}"
+    mode_slug = "analyze-receipt" if bill_mode == "analyze-receipt" else "manual"
+
+    if bill_mode == "analyze-receipt":
+        resolved_receipt = (
+            Path(receipt_image_path)
+            if receipt_image_path is not None
+            else resolve_receipt_fixture("__AUTO__", total_diners)
+        )
+    else:
+        resolved_receipt = None
+
     expected_coperto_cents = int(round(COPERTO_PER_PERSON_EUR * 100)) * total_diners
     expected_grand_total_cents = EXPECTED_ITEMS_CENTS + expected_coperto_cents
     expected_grand_total_str = f"{expected_grand_total_cents / 100:.2f}"
-    bill_title = f"Trattoria Quota {total_diners}-Phone E2E"
-    convergence_timeout_s = float(max(45, 15 * num_guests))
 
     rng = random.Random(seed)
     start_ts = datetime.now(timezone.utc)
     ts_slug = start_ts.strftime("%Y%m%dT%H%M%SZ")
+    bill_title = f"Trattoria Quota {total_diners}P {ts_slug}"
+    convergence_timeout_s = float(max(45, 15 * num_guests))
     run_id = f"e2e-{uuid.uuid4().hex[:10]}"
 
     reports_dir = PROJECT_ROOT / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
-    timeline_path = reports_dir / f"e2e_state_timeline_{ts_slug}.jsonl"
-    audit_md_path = reports_dir / f"e2e_deployment_audit_{ts_slug}.md"
-    out_path = reports_dir / f"e2e_{total_diners}_android_phones_{ts_slug}.json"
+    timeline_path = reports_dir / f"e2e_{scenario_slug}_{mode_slug}_{ts_slug}_timeline.jsonl"
+    audit_md_path = reports_dir / f"e2e_{scenario_slug}_{mode_slug}_{ts_slug}_audit.md"
+    out_path = reports_dir / f"e2e_{scenario_slug}_{mode_slug}_{ts_slug}.json"
 
     env_map = load_env_file(PROJECT_ROOT / ".env")
     supabase_url = (env_map.get("EXPO_PUBLIC_SUPABASE_URL") or env_map.get("SUPABASE_URL") or "").strip()
@@ -689,6 +1170,8 @@ def run_e2e(
     anon_key = (env_map.get("EXPO_PUBLIC_SUPABASE_ANON_KEY") or env_map.get("SUPABASE_ANON_KEY") or "").strip()
     if not supabase_url or not anon_key:
         raise RuntimeError("Missing EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_ANON_KEY in .env")
+
+    ai_proxy_port = int(env_map.get("PORT") or os.environ.get("PORT") or DEFAULT_AI_PROXY_PORT)
 
     slots_meta = [
         {
@@ -810,6 +1293,14 @@ def run_e2e(
         on_event=_on_fleet_event,
         quiet_stdout=True,
     )
+    ai_proxy = AIProxyManager(
+        project_root=PROJECT_ROOT,
+        env_map=env_map,
+        log_dir=fleet.log_dir,
+        port=ai_proxy_port,
+        on_event=_on_fleet_event,
+        quiet_stdout=True,
+    )
     drivers: Dict[str, ExpoAgentDeviceDriver] = {
         slot.serial: ExpoAgentDeviceDriver(
             fleet,
@@ -823,6 +1314,9 @@ def run_e2e(
         "run_id": run_id,
         "started_at": start_ts.isoformat(),
         "seed": seed,
+        "scenario": scenario_slug,
+        "bill_mode": bill_mode,
+        "receipt_image_path": str(resolved_receipt) if resolved_receipt else None,
         "num_guests": num_guests,
         "total_diners": total_diners,
         "headless_guests": headless_guests,
@@ -833,7 +1327,7 @@ def run_e2e(
         "reuse_running": reuse_running,
         "guest_gpu": guest_gpu,
         "apk_path": str(apk_path),
-        "expected_grand_total_cents": expected_grand_total_cents,
+        "expected_grand_total_cents": expected_grand_total_cents if bill_mode == "manual" else None,
         "report_json_path": str(out_path),
         "audit_md_path": str(audit_md_path),
         "state_timeline_path": str(timeline_path),
@@ -854,6 +1348,7 @@ def run_e2e(
             jsonl_obs.close()
         except Exception:
             pass
+        ai_proxy.stop()
         fleet.shutdown(keep_emulators_alive=False)
         sys.exit(130)
 
@@ -881,14 +1376,17 @@ def run_e2e(
                 )
             )
 
-            # Stage 1: Fleet & Metro Bootstrap
+            # Stage 1: Fleet, Metro & (when --analyze-receipt) AI Proxy Auto-Ensure
             st1 = _begin_stage(
                 "fleet_bootstrap",
                 "running pre-flight checks, AVD setup, Metro & CDP proxies",
-                detail=f"{total_diners} slot(s), guest_ram={guest_ram_mb}MB",
+                detail=f"scenario={scenario_slug}, mode={bill_mode}, guest_ram={guest_ram_mb}MB",
             )
             preflight = fleet.prepare_host_infrastructure(reuse_running=reuse_running)
             report["preflight"] = preflight
+            if bill_mode == "analyze-receipt":
+                ai_proxy_info = ai_proxy.ensure_running()
+                report["ai_proxy"] = ai_proxy_info
             _end_stage(
                 "fleet_bootstrap",
                 "host infrastructure ready",
@@ -896,6 +1394,11 @@ def run_e2e(
                 detail=(
                     f"{len(slots)} AVDs on ports {slots[0].proxy_port}..{slots[-1].proxy_port} | "
                     f"free_ram={preflight.get('free_host_ram_mb', '-')}MB"
+                    + (
+                        f" | ai_proxy={report['ai_proxy']['proxy_url']} (started={report['ai_proxy']['started_by_runner']})"
+                        if "ai_proxy" in report
+                        else ""
+                    )
                 ),
             )
 
@@ -919,7 +1422,7 @@ def run_e2e(
                 detail=f"booted in {boot_duration_s}s",
             )
 
-            # Stage 3: APK Deploy & Debug Host
+            # Stage 3: APK Deploy & Debug Host (+ AI Proxy reverse & receipt push for OCR)
             st3 = _begin_stage(
                 "apk_deploy",
                 f"deploying/resetting {apk_path.name} across {total_diners} device(s)",
@@ -927,6 +1430,10 @@ def run_e2e(
             )
             fleet.install_and_prepare_app(apk_path, clear_data=True)
             fleet.clear_logcat_buffers()
+            org_slot = slots[0]
+            if bill_mode == "analyze-receipt" and resolved_receipt is not None:
+                fleet.setup_ai_proxy_reverse(org_slot, port=ai_proxy_port)
+                fleet.inject_receipt_image(org_slot, resolved_receipt)
             install_duration_s = round(time.perf_counter() - st3, 2)
             report["install_duration_s"] = install_duration_s
             _end_stage(
@@ -936,26 +1443,72 @@ def run_e2e(
                 detail=f"prepared in {install_duration_s}s",
             )
 
-            # Stage 4: Organizer Manual Bill
-            org_slot = slots[0]
+            # Stage 4: Organizer Bill Creation (--analyze-receipt OR --manual)
             org_driver = drivers[org_slot.serial]
             st4 = _begin_stage(
                 "organizer_bill",
-                "launching Organizer & creating manual bill",
-                detail=f"{total_diners} diners, 7 items + coperto",
+                (
+                    f"analyzing {resolved_receipt.name} via Gemini Vision OCR"
+                    if bill_mode == "analyze-receipt" and resolved_receipt is not None
+                    else "launching Organizer & creating manual bill"
+                ),
+                detail=f"{total_diners} diners, mode={bill_mode}",
                 device_serial=org_slot.serial,
             )
             fleet.launch_app(org_slot)
             fleet.wait_for_inspector_target(org_slot, timeout_s=120)
             time.sleep(2.0)
             complete_onboarding_if_shown(org_driver)
-            bill_id = organizer_create_manual_bill(
-                org_driver,
-                active_guest_names=active_guest_names,
-                bill_title=bill_title,
-                expected_coperto_cents=expected_coperto_cents,
-                expected_grand_total_cents=expected_grand_total_cents,
+            if bill_mode == "analyze-receipt" and resolved_receipt is not None:
+                bill_id, published_bill, ai_parse_telemetry, org_claim_meta = organizer_analyze_receipt_bill(
+                    org_driver,
+                    fleet,
+                    org_slot,
+                    resolved_receipt,
+                    ai_proxy,
+                    supabase_url,
+                    anon_key,
+                )
+                report["ai_parse_telemetry"] = ai_parse_telemetry
+            else:
+                bill_id = organizer_create_manual_bill(
+                    org_driver,
+                    active_guest_names=active_guest_names,
+                    bill_title=bill_title,
+                    expected_coperto_cents=expected_coperto_cents,
+                    expected_grand_total_cents=expected_grand_total_cents,
+                )
+                published_bill = org_driver.read_store_bill(bill_id) or {}
+                org_claim_meta = {
+                    "org_idx": 0,
+                    "is_fully_locked": True,
+                    "org_item_name": RECEIPT_ITEMS_SPEC[0]["name"],
+                }
+
+            expected_non_coperto = [it for it in published_bill.get("items", []) if not it.get("isCoperto")]
+            expected_has_coperto = any(it.get("isCoperto") for it in published_bill.get("items", []))
+            expected_coperto_per_person_cents = int(round(float(published_bill.get("copertoPerPerson") or 0) * 100))
+            expected_grand_total_cents = int(round(float(published_bill["taxSummary"]["grandTotal"]) * 100))
+            expected_items_plus_cop_cents = sum(
+                int(round(float(it["totalPrice"]) * 100)) for it in published_bill.get("items", [])
             )
+            assert expected_items_plus_cop_cents == expected_grand_total_cents, (
+                f"Parsed/created line items sum ({expected_items_plus_cop_cents}c) != "
+                f"taxSummary.grandTotal ({expected_grand_total_cents}c)"
+            )
+            expected_grand_total_str = f"{expected_grand_total_cents / 100:.2f}"
+            report["expected_grand_total_cents"] = expected_grand_total_cents
+            report["parsed_items_summary"] = [
+                {
+                    "name": it.get("name"),
+                    "quantity": it.get("quantity"),
+                    "unitPrice": it.get("unitPrice"),
+                    "totalPrice": it.get("totalPrice"),
+                    "isCoperto": bool(it.get("isCoperto")),
+                }
+                for it in published_bill.get("items", [])
+            ]
+
             deep_link_url = f"quota://bill/{bill_id}?mode=guest"
             report["bill_id"] = bill_id
             report["deep_link_url"] = deep_link_url
@@ -963,7 +1516,7 @@ def run_e2e(
                 "organizer_bill",
                 "bill created & published to Supabase",
                 st4,
-                detail=f"bill_id={bill_id}, total=EUR {expected_grand_total_str}",
+                detail=f"bill_id={bill_id}, items={len(expected_non_coperto)}, total=EUR {expected_grand_total_str}",
                 device_serial=org_slot.serial,
             )
 
@@ -974,6 +1527,7 @@ def run_e2e(
                 f"launching {num_guests} guest(s) via deep link",
                 detail=deep_link_url,
             )
+            expected_restaurant_name = published_bill.get("restaurantName") or bill_title
             with ThreadPoolExecutor(max_workers=min(4, num_guests)) as pool:
                 for gs in guest_slots:
                     fleet.launch_app(gs, deep_link_url=deep_link_url)
@@ -986,102 +1540,152 @@ def run_e2e(
                 def _join_guest(gs: PhoneSlot) -> None:
                     drv = drivers[gs.serial]
                     drv.wait_for_testid("guest-name-input", timeout_s=45)
-                    hydrated = wait_for_bill_hydration(drv, bill_id, timeout_s=45)
-                    assert hydrated["restaurantName"] == bill_title, (
-                        f"Mock or wrong bill hydrated on {gs.serial}: {hydrated.get('restaurantName')}"
+                    hydrated = wait_for_bill_hydration(
+                        drv,
+                        bill_id,
+                        expected_non_coperto_count=len(expected_non_coperto),
+                        expected_has_coperto=expected_has_coperto,
+                        timeout_s=45,
+                    )
+                    assert hydrated["restaurantName"] == expected_restaurant_name, (
+                        f"Wrong bill hydrated on {gs.serial}: {hydrated.get('restaurantName')!r} != {expected_restaurant_name!r}"
                     )
                     drv.type_text("guest-name-input", gs.guest_name or f"Guest{gs.index}")
                     drv.tap("guest-join-btn")
                     drv.wait_for_testid("guest-filter-all", timeout_s=20)
-                    coperto_txt = drv.get_node_text("guest-coperto-amount")
-                    assert _parse_euro_cents(coperto_txt) == int(round(COPERTO_PER_PERSON_EUR * 100)), (
-                        f"Guest coperto mismatch on {gs.serial}: {coperto_txt}"
+                    if expected_coperto_per_person_cents > 0:
+                        coperto_txt = drv.get_node_text("guest-coperto-amount")
+                        assert _parse_euro_cents(coperto_txt) == expected_coperto_per_person_cents, (
+                            f"Guest coperto mismatch on {gs.serial}: {coperto_txt} "
+                            f"(expected {expected_coperto_per_person_cents}c)"
+                        )
+                    if org_claim_meta["is_fully_locked"]:
+                        drv.wait_for_testid(f"guest-item-locked-{org_claim_meta['org_idx']}", timeout_s=20)
+                    drv.record(
+                        "synced_and_joined",
+                        f"Synced {len(expected_non_coperto)} item(s); organizer item={org_claim_meta['org_idx']} locked={org_claim_meta['is_fully_locked']}",
                     )
-                    drv.wait_for_testid("guest-item-locked-0", timeout_s=20)
-                    drv.record("synced_and_joined", "All 7 items + coperto synced; Item 0 locked for organizer")
 
                 join_futs = [pool.submit(_join_guest, gs) for gs in guest_slots]
                 for f in as_completed(join_futs):
                     f.result()
 
+            post_join_bill = wait_for_table_convergence(
+                org_driver,
+                bill_id,
+                lambda b: len(b.get("participants", [])) == total_diners,
+                f"all {total_diners} participants converged in cloud",
+                timeout_s=convergence_timeout_s,
+            )
+
             _end_stage(
                 "guests_join_sync",
                 f"{num_guests}/{num_guests} guests joined & hydrated",
                 st5,
-                detail=f"all 7 items + coperto synced cleanly",
+                detail=f"{len(expected_non_coperto)} items synced across all {total_diners} phones",
             )
 
             guest_by_name: Dict[str, ExpoAgentDeviceDriver] = {
                 gs.guest_name: drivers[gs.serial] for gs in guest_slots if gs.guest_name
             }
 
-            # Stage 6: Conflict Barriers & Claims
+            # Stage 6: Conflict Barriers & Dynamic Remaining Claims
             st6 = _begin_stage(
                 "claims_and_conflicts",
-                "running overlapping conflict barriers & claims",
-                detail=f"seed={seed}",
+                "running overlapping conflict barriers & dynamic claims",
+                detail=f"seed={seed}, non_coperto={len(expected_non_coperto)}",
             )
-            shared_guests = active_guest_names[: min(3, num_guests)]
-            barrier_shared = threading.Barrier(len(shared_guests))
+            org_idx = int(org_claim_meta["org_idx"])
+            org_locked = bool(org_claim_meta["is_fully_locked"])
+            guest_avail_indices = [
+                i for i in range(len(expected_non_coperto)) if not (org_locked and i == org_idx)
+            ]
+            single_avail = [
+                i for i in guest_avail_indices if int(expected_non_coperto[i].get("quantity") or 1) == 1
+            ]
+            multi_avail = [
+                i for i in guest_avail_indices if int(expected_non_coperto[i].get("quantity") or 1) > 1
+            ]
 
-            def _tap_shared_item(drv: ExpoAgentDeviceDriver) -> None:
-                barrier_shared.wait(timeout=20)
-                drv.tap("guest-item-claim-btn-1")
+            shared_idx: Optional[int] = single_avail[0] if single_avail else (
+                guest_avail_indices[0] if guest_avail_indices else None
+            )
+            if shared_idx is not None and int(expected_non_coperto[shared_idx].get("quantity") or 1) == 1:
+                shared_guests = active_guest_names[: min(3, num_guests)]
+                barrier_shared = threading.Barrier(len(shared_guests))
 
-            with ThreadPoolExecutor(max_workers=len(shared_guests)) as pool:
-                futs = [pool.submit(_tap_shared_item, guest_by_name[gn]) for gn in shared_guests]
-                for f in as_completed(futs):
-                    f.result()
+                def _tap_shared_item(drv: ExpoAgentDeviceDriver, target_idx: int = shared_idx) -> None:
+                    barrier_shared.wait(timeout=20)
+                    drv.tap(f"guest-item-claim-btn-{target_idx}")
 
-            bill_after_shared = wait_for_table_convergence(
-                org_driver,
-                bill_id,
-                lambda b: len(
-                    ([it for it in b.get("items", []) if not it.get("isCoperto")][1].get("assignedParticipantIds") or [])
+                with ThreadPoolExecutor(max_workers=len(shared_guests)) as pool:
+                    futs = [pool.submit(_tap_shared_item, guest_by_name[gn]) for gn in shared_guests]
+                    for f in as_completed(futs):
+                        f.result()
+
+                bill_after_shared = wait_for_table_convergence(
+                    org_driver,
+                    bill_id,
+                    lambda b, s_idx=shared_idx: len(
+                        ([it for it in b.get("items", []) if not it.get("isCoperto")][s_idx].get("assignedParticipantIds") or [])
+                    )
+                    == len(shared_guests),
+                    f"{len(shared_guests)}-way shared item {shared_idx} claim convergence",
+                    timeout_s=convergence_timeout_s,
                 )
-                == len(shared_guests),
-                f"{len(shared_guests)}-way shared item 1 claim convergence",
-                timeout_s=convergence_timeout_s,
-            )
-            item1 = [it for it in bill_after_shared["items"] if not it.get("isCoperto")][1]
-            assert len(item1["assignedParticipantIds"]) == len(shared_guests), (
-                f"Expected {len(shared_guests)} co-claimers on item 1, got {item1}"
-            )
-            org_driver.record(
-                "conflict_test_1_passed",
-                f"{len(shared_guests)}-way overlapping claim on item 1 converged cleanly: {item1['assignedParticipantIds']}",
-            )
-
-            if num_guests >= 3:
-                race_guests = [active_guest_names[0], active_guest_names[1], active_guest_names[-1]]
+                shared_it = [it for it in bill_after_shared["items"] if not it.get("isCoperto")][shared_idx]
+                assert len(shared_it["assignedParticipantIds"]) == len(shared_guests), (
+                    f"Expected {len(shared_guests)} co-claimers on item {shared_idx}, got {shared_it}"
+                )
+                org_driver.record(
+                    "conflict_test_1_passed",
+                    f"{len(shared_guests)}-way overlapping claim on item {shared_idx} ({shared_it['name']}) converged cleanly: {shared_it['assignedParticipantIds']}",
+                )
             else:
-                race_guests = list(active_guest_names)
-            barrier_qty = threading.Barrier(len(race_guests))
+                bill_after_shared = post_join_bill
 
-            def _tap_qty_item(drv: ExpoAgentDeviceDriver) -> None:
-                barrier_qty.wait(timeout=20)
-                drv.tap("guest-item-plus-2")
+            race_candidates = [i for i in multi_avail if i != shared_idx] or multi_avail
+            race_idx: Optional[int] = race_candidates[0] if race_candidates else None
+            if race_idx is not None:
+                race_item_spec = expected_non_coperto[race_idx]
+                race_qty = int(race_item_spec.get("quantity") or 2)
+                if num_guests >= 3:
+                    race_guests = [active_guest_names[0], active_guest_names[1], active_guest_names[-1]]
+                else:
+                    race_guests = list(active_guest_names)
+                barrier_qty = threading.Barrier(len(race_guests))
 
-            with ThreadPoolExecutor(max_workers=len(race_guests)) as pool:
-                futs = [pool.submit(_tap_qty_item, guest_by_name[gn]) for gn in race_guests]
-                for f in as_completed(futs):
-                    f.result()
+                def _tap_qty_item(drv: ExpoAgentDeviceDriver, target_idx: int = race_idx) -> None:
+                    barrier_qty.wait(timeout=20)
+                    drv.tap(f"guest-item-plus-{target_idx}")
 
-            time.sleep(2.5)
-            bill_after_qty = wait_for_table_convergence(
-                org_driver,
-                bill_id,
-                lambda b: sum(([it for it in b["items"] if not it.get("isCoperto")][2].get("claimedQuantities") or {}).values()) >= 1,
-                "qty=2 item 2 race convergence",
-                timeout_s=convergence_timeout_s,
-            )
-            item2 = [it for it in bill_after_qty["items"] if not it.get("isCoperto")][2]
-            claimed_2_sum = sum((item2.get("claimedQuantities") or {}).values())
-            assert 1 <= claimed_2_sum <= 2, f"Item 2 over-claimed during concurrent taps: {item2}"
-            org_driver.record(
-                "conflict_test_2_passed",
-                f"qty=2 concurrent race capped safely at {claimed_2_sum}/2: {item2.get('claimedQuantities')}",
-            )
+                with ThreadPoolExecutor(max_workers=len(race_guests)) as pool:
+                    futs = [pool.submit(_tap_qty_item, guest_by_name[gn]) for gn in race_guests]
+                    for f in as_completed(futs):
+                        f.result()
+
+                time.sleep(2.5)
+                bill_after_qty = wait_for_table_convergence(
+                    org_driver,
+                    bill_id,
+                    lambda b, r_idx=race_idx: sum(
+                        ([it for it in b["items"] if not it.get("isCoperto")][r_idx].get("claimedQuantities") or {}).values()
+                    )
+                    >= 1,
+                    f"qty={race_qty} item {race_idx} race convergence",
+                    timeout_s=convergence_timeout_s,
+                )
+                raced_it = [it for it in bill_after_qty["items"] if not it.get("isCoperto")][race_idx]
+                claimed_race_sum = sum((raced_it.get("claimedQuantities") or {}).values())
+                assert 1 <= claimed_race_sum <= race_qty, (
+                    f"Item {race_idx} over-claimed during concurrent taps: {raced_it}"
+                )
+                org_driver.record(
+                    "conflict_test_2_passed",
+                    f"qty={race_qty} concurrent race on item {race_idx} ({raced_it['name']}) capped safely at {claimed_race_sum}/{race_qty}: {raced_it.get('claimedQuantities')}",
+                )
+            else:
+                bill_after_qty = bill_after_shared
 
             for drv in guest_by_name.values():
                 drv.eval_js(
@@ -1106,33 +1710,52 @@ def run_e2e(
             def _pick_guest() -> str:
                 return uncovered_guests.pop(0) if uncovered_guests else rng.choice(active_guest_names)
 
-            remaining_item2 = 2 - claimed_2_sum
-            for _ in range(remaining_item2):
-                chosen_guest = _pick_guest()
-                guest_by_name[chosen_guest].tap("guest-item-plus-2")
-                time.sleep(0.9)
+            non_coperto_mid = [it for it in bill_after_qty.get("items", []) if not it.get("isCoperto")]
+            dynamic_allocations: Dict[str, List[str]] = {}
+            for idx, it in enumerate(non_coperto_mid):
+                if org_locked and idx == org_idx:
+                    continue
+                if idx == shared_idx and int(it.get("quantity") or 1) == 1:
+                    continue
+                qty = int(it.get("quantity") or 1)
+                if qty > 1:
+                    already = sum((it.get("claimedQuantities") or {}).values())
+                    remaining_units = max(0, qty - already)
+                    for _ in range(remaining_units):
+                        chosen = _pick_guest()
+                        dynamic_allocations.setdefault(str(idx), []).append(chosen)
+                        guest_by_name[chosen].tap(f"guest-item-plus-{idx}")
+                        time.sleep(0.8)
+                else:
+                    if len(it.get("assignedParticipantIds") or []) == 0:
+                        chosen = _pick_guest()
+                        dynamic_allocations.setdefault(str(idx), []).append(chosen)
+                        guest_by_name[chosen].tap(f"guest-item-claim-btn-{idx}")
+                        time.sleep(0.8)
 
-            item4_assignee = _pick_guest()
-            guest_by_name[item4_assignee].tap("guest-item-claim-btn-4")
-            time.sleep(0.8)
-
-            multi_allocations: Dict[int, List[str]] = {3: [], 5: [], 6: []}
-            for item_idx, qty in ((3, 2), (5, 3), (6, 2)):
-                for _ in range(qty):
-                    chosen = _pick_guest()
-                    multi_allocations[item_idx].append(chosen)
-                    guest_by_name[chosen].tap(f"guest-item-plus-{item_idx}")
-                    time.sleep(0.8)
+            # Ensure every guest has at least 1 claimed item even if a custom receipt has fewer units than diners
+            if uncovered_guests:
+                share_fallback_idx = shared_idx if shared_idx is not None else (
+                    single_avail[0] if single_avail else None
+                )
+                if share_fallback_idx is not None:
+                    while uncovered_guests:
+                        chosen = uncovered_guests.pop(0)
+                        dynamic_allocations.setdefault(f"{share_fallback_idx}_shared", []).append(chosen)
+                        guest_by_name[chosen].tap(f"guest-item-claim-btn-{share_fallback_idx}")
+                        time.sleep(0.8)
 
             report["randomized_allocations"] = {
                 "seed": seed,
-                "item_4_single": item4_assignee,
-                "multi_qty_items": multi_allocations,
+                "organizer_item_idx": org_idx,
+                "shared_conflict_idx": shared_idx,
+                "race_conflict_idx": race_idx,
+                "remaining_allocations": dynamic_allocations,
             }
 
             def _all_items_fully_claimed(b: Dict[str, Any]) -> bool:
                 non_cop = [it for it in b.get("items", []) if not it.get("isCoperto")]
-                if len(non_cop) != len(RECEIPT_ITEMS_SPEC):
+                if len(non_cop) != len(expected_non_coperto):
                     return False
                 for it in non_cop:
                     if it["quantity"] > 1:
@@ -1210,8 +1833,11 @@ def run_e2e(
                 f"all {num_guests} guests paid on Organizer",
                 timeout_s=convergence_timeout_s,
             )
-            org_driver.wait_for_testid("summary-confirm-organizer-settlement-btn", timeout_s=15)
-            org_driver.tap("summary-confirm-organizer-settlement-btn")
+            if bill_mode == "manual":
+                org_driver.wait_for_testid("summary-confirm-organizer-settlement-btn", timeout_s=15)
+                org_driver.tap("summary-confirm-organizer-settlement-btn")
+            elif org_driver.find_node("summary-confirm-organizer-settlement-btn") is not None:
+                org_driver.tap("summary-confirm-organizer-settlement-btn")
 
             settled_bill = wait_for_table_convergence(
                 org_driver,
@@ -1293,7 +1919,11 @@ def run_e2e(
 
             non_coperto_cloud = [it for it in cloud_bill["items"] if not it.get("isCoperto")]
             coperto_cloud = [it for it in cloud_bill["items"] if it.get("isCoperto")]
-            assert len(non_coperto_cloud) == 7 and len(coperto_cloud) == 1
+            assert len(non_coperto_cloud) == len(expected_non_coperto), (
+                f"Expected {len(expected_non_coperto)} non-coperto items in cloud, got {len(non_coperto_cloud)}"
+            )
+            if expected_has_coperto:
+                assert len(coperto_cloud) >= 1, "Expected coperto line item in cloud bill"
             for it in non_coperto_cloud:
                 if it["quantity"] > 1:
                     claimed_tot = sum((it.get("claimedQuantities") or {}).values())
@@ -1354,6 +1984,7 @@ def run_e2e(
                 st8,
                 detail=cleanup_detail,
             )
+            current_stage_box[0] = "pipeline"
             bus.emit(
                 E2EEvent(
                     stage_id="pipeline",
@@ -1392,9 +2023,12 @@ def run_e2e(
             )
             raise
         finally:
-            if not fleet._is_shut_down and (succeeded or not keep_alive_on_fail):
-                fleet.shutdown(keep_emulators_alive=bool(keep_alive and succeeded))
-                report["remaining_emulators_after_shutdown"] = list_connected_emulators(fleet.adb_exe)
+            try:
+                if not fleet._is_shut_down and (succeeded or not keep_alive_on_fail):
+                    fleet.shutdown(keep_emulators_alive=bool(keep_alive and succeeded))
+                    report["remaining_emulators_after_shutdown"] = list_connected_emulators(fleet.adb_exe)
+            finally:
+                ai_proxy.stop()
 
             report["finished_at"] = datetime.now(timezone.utc).isoformat()
             report["total_duration_s"] = round((datetime.now(timezone.utc) - start_ts).total_seconds(), 2)
@@ -1413,6 +2047,8 @@ def run_e2e(
                     summary_payload = {
                         "run_id": run_id,
                         "status": report["status"],
+                        "scenario": scenario_slug,
+                        "bill_mode": bill_mode,
                         "num_guests": num_guests,
                         "total_diners": total_diners,
                         "headless_guests": headless_guests,
@@ -1421,6 +2057,8 @@ def run_e2e(
                         "total_duration_s": report["total_duration_s"],
                         "telemetry_overhead_ms": report["telemetry_overhead_ms"],
                         "expected_grand_total_cents": expected_grand_total_cents,
+                        "ai_proxy": report.get("ai_proxy"),
+                        "ai_parse_telemetry": report.get("ai_parse_telemetry"),
                         "ram_benchmark": report.get("ram_benchmark"),
                         "memory_health": report.get("memory_health"),
                         "report_json_path": str(out_path),
@@ -1433,13 +2071,21 @@ def run_e2e(
                 mode_label = "HEADLESS GUESTS" if headless_guests else "ALL WINDOWS SHOWN"
                 rb = report.get("ram_benchmark") or {}
                 mh = report.get("memory_health") or {}
+                ap = report.get("ai_parse_telemetry") or {}
                 print("=" * 76, flush=True)
                 print("QUOTA PAY — MULTI-EMULATOR ANDROID DEPLOYMENT & E2E PIPELINE", flush=True)
                 print(f"   Run ID          : {run_id}", flush=True)
+                print(f"   Scenario / Mode : {scenario_slug} | {bill_mode}", flush=True)
                 print(f"   Diners          : 1 Organizer + {num_guests} Guest(s) ({total_diners} total)", flush=True)
                 print(f"   Window Mode     : {mode_label} (Guest RAM={guest_ram_mb}MB, Batch={boot_batch_size})", flush=True)
                 print(f"   Final Status    : {report['status']}", flush=True)
                 print(f"   Boot / Total    : {report.get('boot_duration_s', '-')}s / {report['total_duration_s']}s", flush=True)
+                if ap:
+                    print(
+                        f"   AI OCR Telemetry: model={ap.get('model_used', '-')} | "
+                        f"latency={ap.get('response_time_ms', '-')}ms | items={ap.get('parsed_item_count', '-')}",
+                        flush=True,
+                    )
                 if rb:
                     print(
                         f"   Host Fleet RAM  : WorkingSet={rb.get('total_working_set_mb', '-')}MB "
@@ -1487,21 +2133,43 @@ def run_e2e(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Multi-Phone Local Android Emulator E2E Test")
     parser.add_argument(
+        "--scenario",
+        choices=sorted(SCENARIO_PRESETS.keys()),
+        default=None,
+        help="Topology preset: '4-visible' (1 Organizer + 3 visible) or '10-headless' (1 Organizer + 9 headless ATD)",
+    )
+    parser.add_argument(
         "-g",
         "--guests",
         type=int,
-        default=4,
+        default=None,
         help="Number of guest emulators (1-9 with --headless-guests, 1-3 with --show-all-windows)",
     )
     mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument("--headless-guests", dest="headless_guests", action="store_true")
+    mode_group.add_argument("--headless-guests", dest="headless_guests", action="store_true", default=None)
     mode_group.add_argument("--show-all-windows", "--all-windows", dest="headless_guests", action="store_false")
-    parser.set_defaults(headless_guests=True)
+
+    bill_group = parser.add_mutually_exclusive_group()
+    bill_group.add_argument(
+        "--analyze-receipt",
+        nargs="?",
+        const="__AUTO__",
+        default=None,
+        metavar="IMAGE_PATH",
+        help="Auto-ensure AI proxy, push receipt image, analyze via Gemini Vision, & split (auto-selects fixture if path omitted)",
+    )
+    bill_group.add_argument(
+        "--manual",
+        action="store_true",
+        default=False,
+        help="Create a fresh timestamped manual bill on Phone 1 without needing the AI proxy",
+    )
+
     parser.add_argument(
         "--guest-ram-mb",
         type=int,
         default=None,
-        help="Guest AVD RAM in MB (512-4096; default: 1024 headless, 1536 visible)",
+        help="Guest AVD RAM in MB (512-4096; default: 1024)",
     )
     parser.add_argument("--boot-batch-size", type=int, default=DEFAULT_BOOT_BATCH_SIZE, help="Emulators to boot per batch (1-10)")
     parser.add_argument("--prepare-snapshots", action="store_true", help="Pre-warm clean_ready snapshots and exit")
@@ -1545,7 +2213,16 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    validate_guest_config(args.guests, args.headless_guests)
+    num_guests, headless_guests, scenario = resolve_cli_topology(
+        args.scenario, args.guests, args.headless_guests
+    )
+    bill_mode = "analyze-receipt" if args.analyze_receipt is not None else "manual"
+    receipt_image_path = (
+        resolve_receipt_fixture(args.analyze_receipt, 1 + num_guests)
+        if bill_mode == "analyze-receipt"
+        else None
+    )
+
     if args.ui_port < 1 or args.ui_port > 65535:
         print(
             f"ERROR: Invalid --ui-port ({args.ui_port}). Must be between 1 and 65535.",
@@ -1553,11 +2230,7 @@ def main() -> int:
             flush=True,
         )
         raise SystemExit(2)
-    resolved_guest_ram = (
-        args.guest_ram_mb
-        if args.guest_ram_mb is not None
-        else (DEFAULT_GUEST_RAM_MB if args.headless_guests else VISIBLE_GUEST_RAM_MB)
-    )
+    resolved_guest_ram = args.guest_ram_mb if args.guest_ram_mb is not None else DEFAULT_GUEST_RAM_MB
     if resolved_guest_ram < 512 or resolved_guest_ram > 4096:
         print(
             f"ERROR: Invalid --guest-ram-mb ({resolved_guest_ram}). Must be between 512 and 4096.",
@@ -1578,11 +2251,11 @@ def main() -> int:
         apk = PROJECT_ROOT / apk
 
     if args.prepare_snapshots:
-        slots = build_phone_slots(args.guests, headless_guests=args.headless_guests)
+        slots = build_phone_slots(num_guests, headless_guests=headless_guests)
         fleet = AndroidEmulatorFleet(
             project_root=PROJECT_ROOT,
             slots=slots,
-            headless_guests=args.headless_guests,
+            headless_guests=headless_guests,
             guest_ram_mb=resolved_guest_ram,
             boot_batch_size=args.boot_batch_size,
             guest_gpu_mode=args.guest_gpu,
@@ -1592,11 +2265,14 @@ def main() -> int:
         return 0
 
     run_e2e(
-        num_guests=args.guests,
-        headless_guests=args.headless_guests,
+        num_guests=num_guests,
+        headless_guests=headless_guests,
         seed=args.seed,
         keep_alive_on_fail=args.keep_alive_on_fail,
         apk_path=apk,
+        scenario=scenario,
+        bill_mode=bill_mode,
+        receipt_image_path=receipt_image_path,
         no_tui=args.no_tui,
         enable_ui=args.ui,
         ui_port=args.ui_port,
@@ -1610,7 +2286,7 @@ def main() -> int:
         guest_gpu=args.guest_gpu,
     )
     if not args.json:
-        print(f"[e2e] ALL {1 + args.guests}-PHONE ANDROID E2E ASSERTIONS PASSED!", flush=True)
+        print(f"[e2e] ALL {1 + num_guests}-PHONE ANDROID E2E ASSERTIONS PASSED!", flush=True)
     return 0
 
 

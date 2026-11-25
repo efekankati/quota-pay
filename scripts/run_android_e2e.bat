@@ -10,7 +10,7 @@ if not defined GIT_BASH if exist "%LOCALAPPDATA%\Programs\Git\bin\bash.exe" set 
 if not defined GIT_BASH (
     echo ERROR: Git Bash was not found ^(avoiding Windows WSL bash.exe^). >&2
     echo Run Python directly instead: >&2
-    echo   python e2e\five_phone_android_e2e.py --guests ^<N^> [--headless-guests ^| --show-all-windows] >&2
+    echo   python e2e\five_phone_android_e2e.py --scenario ^<4-visible^|10-headless^> [--analyze-receipt [IMAGE] ^| --manual] >&2
     exit /b 1
 )
 

@@ -477,7 +477,6 @@ export const SessionSummaryScreen: React.FC<SessionSummaryScreenProps> = ({
         </View>
 
         {!isGuestBrowser &&
-          bill.isManual &&
           organizer &&
           (organizer.status !== 'paid' ||
             Math.abs((organizer.paidAmount || 0) - organizerSettledAmount) > 0.005) && (

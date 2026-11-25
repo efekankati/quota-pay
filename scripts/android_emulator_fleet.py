@@ -24,7 +24,9 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,11 +46,12 @@ ORGANIZER_RAM_MB = 1536
 ORGANIZER_HEAP_MB = 256
 ORGANIZER_CORES = 2
 DEFAULT_GUEST_RAM_MB = 1024
-VISIBLE_GUEST_RAM_MB = 1536
+VISIBLE_GUEST_RAM_MB = DEFAULT_GUEST_RAM_MB
 GUEST_HEAP_MB = 192
 GUEST_CORES = 2
 DEFAULT_BOOT_BATCH_SIZE = 2
 DEFAULT_DNS_SERVERS = "8.8.8.8,1.1.1.1"
+DEFAULT_AI_PROXY_PORT = 3000
 
 
 @dataclass(frozen=True)
@@ -408,19 +411,18 @@ def ensure_isolated_avds(
     for slot in slots:
         is_organizer = slot.index == 1 or slot.role == "organizer"
         use_default_image = is_organizer or (not headless_guests) or slot.avd.endswith("_Visible")
+        slot_heap = ORGANIZER_HEAP_MB if is_organizer else GUEST_HEAP_MB
         if use_default_image:
             sysdir_rel = ORGANIZER_SYSIMAGE_REL
             tag_id = "default"
             tag_display = "Default Android System Image"
             default_slot_ram = ram_mb if is_organizer else guest_ram_mb
             slot_ram = int(ram_by_avd.get(slot.avd, default_slot_ram) if ram_by_avd else default_slot_ram)
-            slot_heap = ORGANIZER_HEAP_MB
         else:
             sysdir_rel = GUEST_SYSIMAGE_REL
             tag_id = "aosp_atd"
             tag_display = "AOSP ATD"
             slot_ram = int(ram_by_avd.get(slot.avd, guest_ram_mb) if ram_by_avd else guest_ram_mb)
-            slot_heap = GUEST_HEAP_MB
 
         slot_cores = int(cores_by_avd.get(slot.avd, cores) if cores_by_avd else cores)
 
@@ -854,6 +856,209 @@ class FleetLogRecord:
 ALL_PHONE_SLOTS_TOTAL_HELP = "Number of emulators (1..10)"
 
 
+def load_env_file(env_path: Path) -> Dict[str, str]:
+    """Parse key=value pairs from a .env file without mutating os.environ."""
+    env: Dict[str, str] = {}
+    if not env_path.exists():
+        return env
+    for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+class AIProxyManager:
+    """Ensures `quota-ai-proxy` is reachable and manages a local Node.js fallback if needed."""
+
+    def __init__(
+        self,
+        project_root: Path,
+        *,
+        env_map: Optional[Dict[str, str]] = None,
+        log_dir: Optional[Path] = None,
+        port: Optional[int] = None,
+        on_event: Optional[Callable[[str, str, str], None]] = None,
+        quiet_stdout: bool = False,
+    ) -> None:
+        self.project_root = Path(project_root)
+        self.env_map: Dict[str, str] = dict(env_map) if env_map is not None else load_env_file(self.project_root / ".env")
+        raw_port = port if port is not None else int(self.env_map.get("PORT") or os.environ.get("PORT") or DEFAULT_AI_PROXY_PORT)
+        self.port = int(raw_port)
+        self.log_dir = Path(log_dir) if log_dir is not None else (Path(tempfile.gettempdir()) / f"quota_e2e_proxy_{os.getpid()}")
+        self.log_path = self.log_dir / "ai_proxy.log"
+        self._on_event = on_event
+        self._quiet_stdout = quiet_stdout
+        self._proc: Optional[subprocess.Popen[bytes]] = None
+        self.started_by_runner = False
+        self.proxy_url: Optional[str] = None
+        self.last_info: Dict[str, Any] = {}
+
+    def _log(self, event: str, detail: str) -> None:
+        if self._on_event is not None:
+            try:
+                self._on_event("ai_proxy", event, detail)
+            except Exception:
+                pass
+        if not self._quiet_stdout:
+            print(f"[ai_proxy] {event}: {detail}", flush=True)
+
+    @staticmethod
+    def probe_health(base_url: str, timeout_s: float = 1.8) -> Tuple[bool, Optional[float], Optional[Dict[str, Any]]]:
+        url = f"{base_url.rstrip('/')}/api/health"
+        req = urllib.request.Request(url, method="GET")
+        t0 = time.perf_counter()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                if resp.status != 200:
+                    return False, elapsed_ms, None
+                raw = resp.read().decode("utf-8", errors="replace")
+                payload = json.loads(raw)
+                if isinstance(payload, dict) and payload.get("status") == "ok":
+                    return True, elapsed_ms, payload
+                return False, elapsed_ms, payload if isinstance(payload, dict) else None
+        except Exception:
+            return False, None, None
+
+    def candidate_urls(self) -> List[str]:
+        raw: List[str] = [
+            "http://192.168.178.128",
+            "http://192.168.178.128:3000",
+            f"http://127.0.0.1:{self.port}",
+        ]
+        cfg_url = (self.env_map.get("EXPO_PUBLIC_AI_PROXY_URL") or os.environ.get("EXPO_PUBLIC_AI_PROXY_URL") or "").strip().rstrip("/")
+        if cfg_url:
+            raw.append(cfg_url)
+        seen: Set[str] = set()
+        out: List[str] = []
+        for u in raw:
+            norm = u.rstrip("/")
+            if norm and norm not in seen:
+                seen.add(norm)
+                out.append(norm)
+        return out
+
+    def ensure_running(self) -> Dict[str, Any]:
+        for cand in self.candidate_urls():
+            ok, health_ms, payload = self.probe_health(cand, timeout_s=1.8)
+            if ok:
+                is_local = any(tok in cand for tok in ("127.0.0.1", "localhost"))
+                self.started_by_runner = False
+                self.proxy_url = cand
+                info: Dict[str, Any] = {
+                    "proxy_url": cand,
+                    "started_by_runner": False,
+                    "is_local": is_local,
+                    "health_ms": health_ms,
+                    "port": self.port,
+                    "health_payload": payload,
+                }
+                self.last_info = info
+                self._log("ai_proxy_reused", f"reachable at {cand} ({health_ms}ms)")
+                return info
+
+        gemini_key = (
+            os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("EXPO_PUBLIC_GEMINI_API_KEY")
+            or self.env_map.get("GEMINI_API_KEY")
+            or self.env_map.get("EXPO_PUBLIC_GEMINI_API_KEY")
+            or ""
+        ).strip()
+        if not gemini_key:
+            raise RuntimeError(
+                "No running quota-ai-proxy found and GEMINI_API_KEY / EXPO_PUBLIC_GEMINI_API_KEY is missing in .env / environment."
+            )
+
+        server_dir = self.project_root / "server"
+        dist_entry = server_dir / "dist" / "index.js"
+        if not dist_entry.exists():
+            npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
+            self._log("ai_proxy_build", f"compiling {server_dir}")
+            subprocess.run([npm_cmd, "run", "build"], cwd=str(server_dir), check=True, timeout=60)
+
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        proc_env = os.environ.copy()
+        proc_env.update(self.env_map)
+        proc_env["PORT"] = str(self.port)
+
+        log_fp = self.log_path.open("wb")
+        try:
+            self._proc = subprocess.Popen(
+                ["node", "--max-old-space-size=512", "dist/index.js"],
+                cwd=str(server_dir),
+                env=proc_env,
+                stdout=log_fp,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            )
+        finally:
+            log_fp.close()
+
+        local_url = f"http://127.0.0.1:{self.port}"
+        deadline = time.time() + 20.0
+        while time.time() < deadline:
+            if self._proc.poll() is not None:
+                tail = self.read_log_tail()
+                raise RuntimeError(
+                    f"Local quota-ai-proxy exited early (code={self._proc.returncode}):\n{tail}"
+                )
+            ok, health_ms, payload = self.probe_health(local_url, timeout_s=1.2)
+            if ok:
+                self.started_by_runner = True
+                self.proxy_url = local_url
+                info = {
+                    "proxy_url": local_url,
+                    "started_by_runner": True,
+                    "is_local": True,
+                    "health_ms": health_ms,
+                    "port": self.port,
+                    "pid": self._proc.pid,
+                    "log_path": str(self.log_path),
+                    "health_payload": payload,
+                }
+                self.last_info = info
+                self._log("ai_proxy_started", f"local proxy healthy on {local_url} (pid={self._proc.pid}, {health_ms}ms)")
+                return info
+            time.sleep(0.35)
+
+        tail = self.read_log_tail()
+        self.started_by_runner = True
+        self.stop()
+        raise TimeoutError(f"Local quota-ai-proxy did not become healthy on {local_url} within 20s:\n{tail}")
+
+    def read_log_tail(self, max_chars: int = 2000) -> str:
+        if not self.log_path.exists():
+            return ""
+        return self.log_path.read_text(encoding="utf-8", errors="replace")[-max_chars:]
+
+    def stop(self) -> None:
+        if not self.started_by_runner or self._proc is None:
+            return
+        proc = self._proc
+        self._proc = None
+        if proc.poll() is None:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True,
+                    check=False,
+                )
+            else:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+        self.started_by_runner = False
+        self._log("ai_proxy_stopped", f"stopped runner-managed proxy on :{self.port}")
+
+
 class AndroidEmulatorFleet:
     def __init__(
         self,
@@ -877,7 +1082,7 @@ class AndroidEmulatorFleet:
         self.guest_ram_mb = (
             guest_ram_mb
             if guest_ram_mb is not None
-            else (DEFAULT_GUEST_RAM_MB if headless_guests else VISIBLE_GUEST_RAM_MB)
+            else DEFAULT_GUEST_RAM_MB
         )
         self.cores = cores if cores is not None else ORGANIZER_CORES
         self.boot_batch_size = max(1, int(boot_batch_size))
@@ -1778,6 +1983,122 @@ class AndroidEmulatorFleet:
         )
         return bench
 
+    def setup_ai_proxy_reverse(self, slot: PhoneSlot, port: int = DEFAULT_AI_PROXY_PORT) -> None:
+        """Forward tcp:<port> inside `slot` to host tcp:<port> so 127.0.0.1:<port> reaches local AI proxy."""
+        run_cmd(
+            [str(self.adb_exe), "-s", slot.serial, "reverse", f"tcp:{port}", f"tcp:{port}"],
+            timeout=15,
+            check=True,
+        )
+        self._log(slot.serial, "ai_proxy_reverse", f"adb reverse tcp:{port} -> tcp:{port}")
+
+    def inject_receipt_image(
+        self,
+        slot: PhoneSlot,
+        image_path: Path,
+        remote_filename: str = "quota_e2e_receipt.jpg",
+    ) -> str:
+        """Remove prior receipt fixtures, push `image_path`, trigger MediaStore scan, and verify visibility."""
+        img = Path(image_path)
+        if not img.exists() or not img.is_file():
+            raise FileNotFoundError(f"Receipt image not found: {img}")
+
+        stem = Path(remote_filename).stem
+        remote_path = f"/sdcard/Pictures/{remote_filename}"
+        run_cmd(
+            [
+                str(self.adb_exe),
+                "-s",
+                slot.serial,
+                "shell",
+                f"rm -f /sdcard/Pictures/{stem}.* /sdcard/DCIM/{stem}.*",
+            ],
+            timeout=15,
+            check=False,
+        )
+        run_cmd(
+            [str(self.adb_exe), "-s", slot.serial, "shell", "mkdir", "-p", "/sdcard/Pictures"],
+            timeout=15,
+            check=True,
+        )
+        run_cmd(
+            [str(self.adb_exe), "-s", slot.serial, "push", str(img), remote_path],
+            timeout=60,
+            check=True,
+        )
+        run_cmd(
+            [str(self.adb_exe), "-s", slot.serial, "shell", "touch", remote_path],
+            timeout=15,
+            check=False,
+        )
+        run_cmd(
+            [
+                str(self.adb_exe),
+                "-s",
+                slot.serial,
+                "shell",
+                "content",
+                "call",
+                "--uri",
+                "content://media",
+                "--method",
+                "scan_file",
+                "--arg",
+                remote_path,
+            ],
+            timeout=15,
+            check=False,
+        )
+        run_cmd(
+            [
+                str(self.adb_exe),
+                "-s",
+                slot.serial,
+                "shell",
+                "am",
+                "broadcast",
+                "-a",
+                "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                "-d",
+                f"file://{remote_path}",
+            ],
+            timeout=15,
+            check=False,
+        )
+
+        deadline = time.time() + 12.0
+        indexed = False
+        last_stdout = ""
+        while time.time() < deadline:
+            q_proc = run_cmd(
+                [
+                    str(self.adb_exe),
+                    "-s",
+                    slot.serial,
+                    "shell",
+                    "content",
+                    "query",
+                    "--uri",
+                    "content://media/external/images/media",
+                    "--projection",
+                    "_id:_display_name:_data",
+                ],
+                timeout=15,
+                check=False,
+            )
+            last_stdout = q_proc.stdout or ""
+            if remote_filename in last_stdout:
+                indexed = True
+                break
+            time.sleep(0.6)
+
+        if not indexed:
+            raise RuntimeError(
+                f"Injected receipt image {remote_filename} not visible in MediaStore on {slot.serial}: {last_stdout!r}"
+            )
+        self._log(slot.serial, "receipt_injected", f"{img.name} -> {remote_path} (MediaStore verified)")
+        return remote_path
+
     def launch_app(self, slot: PhoneSlot, deep_link_url: Optional[str] = None) -> None:
         self._last_launch_url[slot.serial] = deep_link_url
         self._configure_app_debug_host(slot)
@@ -1917,7 +2238,7 @@ def main() -> int:
         "--guest-ram-mb",
         type=int,
         default=None,
-        help="Guest RAM in MB (default: 1024 headless, 1536 visible)",
+        help="Guest RAM in MB (default: 1024)",
     )
     parser.add_argument("--boot-batch-size", type=int, default=DEFAULT_BOOT_BATCH_SIZE, help="Emulators to boot per batch (default: 2)")
     parser.add_argument("--prepare-snapshots", action="store_true", help="Prepare clean_ready snapshots during action")

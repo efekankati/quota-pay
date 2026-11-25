@@ -193,6 +193,18 @@ export const ItemizerScreen: React.FC<ItemizerScreenProps> = ({
     return bill.items;
   }, [bill.items, activeFilter, selectedParticipantId]);
 
+  const nonCopertoIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    let nonCopertoIdx = 0;
+    for (const it of bill.items) {
+      if (!it.isCoperto) {
+        map.set(it.id, nonCopertoIdx);
+        nonCopertoIdx += 1;
+      }
+    }
+    return map;
+  }, [bill.items]);
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <Header
@@ -328,37 +340,57 @@ export const ItemizerScreen: React.FC<ItemizerScreenProps> = ({
             {t('tapToAssignPrompt', { name: selectedDiner?.name.split(' ')[0] || '' })}
           </Text>
         }
-        renderItem={({ item }) => (
-          <LineItemRow
-            item={item}
-            participants={bill.participants}
-            selectedParticipantId={selectedParticipantId}
-            onToggleAssign={() => {
-              if (isOrganizerAlreadySettled) {
-                showAppAlert(
-                  t('appName'),
-                  t('organizerCannotEditFriends'),
-                  [{ text: 'OK' }],
-                  'info'
-                );
-                return;
+        renderItem={({ item }) => {
+          const nonCopertoIdx = item.isCoperto ? undefined : nonCopertoIndexById.get(item.id);
+          return (
+            <LineItemRow
+              item={item}
+              participants={bill.participants}
+              selectedParticipantId={selectedParticipantId}
+              rowTestID={
+                item.isCoperto
+                  ? 'itemizer-coperto-row'
+                  : nonCopertoIdx !== undefined
+                  ? `itemizer-item-row-${nonCopertoIdx}`
+                  : undefined
               }
-              toggleItemAssignment(bill.id, item.id, selectedParticipantId);
-            }}
-            onChangeQuantity={(newQty) => {
-              if (isOrganizerAlreadySettled) {
-                showAppAlert(
-                  t('appName'),
-                  t('organizerCannotEditFriends'),
-                  [{ text: 'OK' }],
-                  'info'
-                );
-                return;
+              plusTestID={
+                !item.isCoperto && nonCopertoIdx !== undefined
+                  ? `itemizer-item-plus-${nonCopertoIdx}`
+                  : undefined
               }
-              setItemClaimedQuantity(bill.id, item.id, selectedParticipantId, newQty);
-            }}
-          />
-        )}
+              minusTestID={
+                !item.isCoperto && nonCopertoIdx !== undefined
+                  ? `itemizer-item-minus-${nonCopertoIdx}`
+                  : undefined
+              }
+              onToggleAssign={() => {
+                if (isOrganizerAlreadySettled) {
+                  showAppAlert(
+                    t('appName'),
+                    t('organizerCannotEditFriends'),
+                    [{ text: 'OK' }],
+                    'info'
+                  );
+                  return;
+                }
+                toggleItemAssignment(bill.id, item.id, selectedParticipantId);
+              }}
+              onChangeQuantity={(newQty) => {
+                if (isOrganizerAlreadySettled) {
+                  showAppAlert(
+                    t('appName'),
+                    t('organizerCannotEditFriends'),
+                    [{ text: 'OK' }],
+                    'info'
+                  );
+                  return;
+                }
+                setItemClaimedQuantity(bill.id, item.id, selectedParticipantId, newQty);
+              }}
+            />
+          );
+        }}
         ListEmptyComponent={
           <View style={styles.emptyFilterContainer}>
             <Utensils size={32} color={colors.textTertiary} />
@@ -384,7 +416,7 @@ export const ItemizerScreen: React.FC<ItemizerScreenProps> = ({
                   name: selectedDiner?.name.split(' ')[0] || '',
                 })}
           </Text>
-          <Text style={[styles.bottomPrice, { color: colors.accent }]} numberOfLines={1}>
+          <Text testID="itemizer-organizer-share" style={[styles.bottomPrice, { color: colors.accent }]} numberOfLines={1}>
             €{shareBreakdown.totalDue.toFixed(2)}
           </Text>
           {shareBreakdown.copertoShare > 0 ? (
@@ -421,6 +453,7 @@ export const ItemizerScreen: React.FC<ItemizerScreenProps> = ({
         ) : isOrganizerSelected ? (
           /* Organizer CTA: Already paid, deduct share, share bill */
           <TouchableOpacity
+            testID="itemizer-confirm-share-btn"
             activeOpacity={0.85}
             onPress={handleOrganizerConfirmAndShare}
             style={[styles.organizerProceedBtn, { backgroundColor: colors.accent }]}

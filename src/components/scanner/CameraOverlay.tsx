@@ -28,6 +28,7 @@ export const CameraOverlay: React.FC<CameraOverlayProps> = ({
       <View pointerEvents="box-none" style={styles.bottomBar}>
         {/* Pick from Gallery Button */}
         <TouchableOpacity
+          testID="scanner-gallery-btn"
           activeOpacity={0.7}
           disabled={isScanning}
           onPress={() => {

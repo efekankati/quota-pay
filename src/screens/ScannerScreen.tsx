@@ -349,6 +349,7 @@ export const ScannerScreen: React.FC<ScannerScreenProps> = ({
             )}
 
             <TouchableOpacity
+              testID="scanner-gallery-fallback-btn"
               activeOpacity={0.8}
               onPress={handlePickFromGallery}
               style={styles.galleryFallbackBtn}

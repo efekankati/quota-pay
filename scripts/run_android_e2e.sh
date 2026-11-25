@@ -7,9 +7,14 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MAX_HEADLESS_GUESTS=9
 MAX_VISIBLE_GUESTS=3
 
+SCENARIO=""
+BILL_MODE=""
+RECEIPT_IMAGE=""
+HAS_RECEIPT_IMAGE=0
+
 GUESTS=""
 MODE_SET=""
-HEADLESS_GUESTS=1
+HEADLESS_GUESTS=""
 SEED=""
 APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
 KEEP_ALIVE_ON_FAIL=0
@@ -29,19 +34,26 @@ GUEST_GPU=""
 print_usage() {
   cat <<'EOF'
 Usage:
-  scripts/run_android_e2e.sh --guests <N> [--headless-guests | --show-all-windows] [options]
-  scripts/run_android_e2e.sh <N> [--headless-guests | --show-all-windows] [options]
+  scripts/run_android_e2e.sh --scenario <4-visible|10-headless> [--analyze-receipt [IMAGE] | --manual] [options]
+  scripts/run_android_e2e.sh --guests <N> [--headless-guests | --show-all-windows] [--analyze-receipt [IMAGE] | --manual] [options]
 
-Allowed guest limits:
-  --headless-guests   Allows 1 to 9 guests (1 Organizer visible + up to 9 headless guests = 10 emulators)
-  --show-all-windows  Allows 1 to 3 guests (1 Organizer + up to 3 visible guest windows = 4 visible emulators)
+Device Topologies (--scenario):
+  --scenario 4-visible    1 Organizer + 3 Guests — all 4 emulator windows visible (default images)
+  --scenario 10-headless  1 Organizer (visible) + 9 Guests (headless AOSP ATD, -no-window)
+
+Bill Creation Modes (mutually exclusive):
+  --analyze-receipt [PATH]  Auto-ensure AI proxy, push receipt image to emulator-5554 gallery,
+                            pick image via Photo Picker, parse with Gemini Vision, & split
+                            (omit PATH to auto-select e2e/fixtures/receipt_4p.jpg or receipt_10p.jpg)
+  --manual                  Create a fresh timestamped manual bill on Phone 1 without AI proxy
+
+Legacy Guest Limits (when --scenario is omitted):
+  -g, --guests <N>        Number of guests (1-9 with --headless-guests, 1-3 with --show-all-windows)
+      --headless-guests   Run guests headless with Organizer window visible (default)
+      --show-all-windows  Show all emulator windows (alias: --all-windows; 1-3 guests)
 
 Options:
-  -g, --guests <N>        Number of guests (integer)
-      --headless-guests   Run guests headless with Organizer window visible (default; 1-9 guests)
-      --show-all-windows  Show all emulator windows (alias: --all-windows; 1-3 guests)
-      --all-windows       Alias for --show-all-windows
-      --guest-ram-mb <MB> Guest RAM override in MB (512-4096; default: 1024 headless, 1536 visible)
+      --guest-ram-mb <MB> Guest RAM override in MB (512-4096; default: 1024 for all guests)
       --boot-batch-size <N> Concurrent emulators to boot per batch (1-10; default: 2)
       --prepare-snapshots Boot AVDs, install APK cleanly, save 'clean_ready' snapshots, and exit
       --no-snapshot       Bypass 'clean_ready' snapshots and force cold boot
@@ -59,9 +71,11 @@ Options:
   -h, --help              Show this help and exit
 
 Examples:
-  scripts/run_android_e2e.sh --guests 3 --headless-guests --prepare-snapshots
-  scripts/run_android_e2e.sh --guests 3 --show-all-windows --ui
-  scripts/run_android_e2e.sh --guests 9 --headless-guests
+  scripts/run_android_e2e.sh --scenario 4-visible --analyze-receipt
+  scripts/run_android_e2e.sh --scenario 4-visible --analyze-receipt path/to/receipt.jpg
+  scripts/run_android_e2e.sh --scenario 4-visible --manual
+  scripts/run_android_e2e.sh --scenario 10-headless --analyze-receipt
+  scripts/run_android_e2e.sh --scenario 10-headless --manual
 EOF
 }
 
@@ -70,9 +84,10 @@ reject_input() {
   {
     echo "ERROR: ${reason}"
     echo ""
-    echo "Accepted guest-count conditions:"
-    echo "  - With --headless-guests  : integer N from 1 to ${MAX_HEADLESS_GUESTS} (up to 10 emulators total)"
-    echo "  - With --show-all-windows : integer N from 1 to ${MAX_VISIBLE_GUESTS} (up to 4 visible emulator windows)"
+    echo "Accepted topologies & bill-creation modes:"
+    echo "  - --scenario 4-visible [--analyze-receipt [IMAGE] | --manual]"
+    echo "  - --scenario 10-headless [--analyze-receipt [IMAGE] | --manual]"
+    echo "  - Legacy: --guests <1..9> --headless-guests  OR  --guests <1..3> --show-all-windows"
     echo "Input rejected without launching any emulator."
   } >&2
   exit 2
@@ -91,6 +106,55 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       print_usage
       exit 0
+      ;;
+    --scenario)
+      require_value "$1" "$#"
+      SCENARIO="$2"
+      case "${SCENARIO}" in
+        4-visible|10-headless) ;;
+        *) reject_input "Flag '--scenario' must be '4-visible' or '10-headless', got '${SCENARIO}'." ;;
+      esac
+      shift 2
+      ;;
+    --scenario=*)
+      SCENARIO="${1#*=}"
+      case "${SCENARIO}" in
+        4-visible|10-headless) ;;
+        *) reject_input "Flag '--scenario' must be '4-visible' or '10-headless', got '${SCENARIO}'." ;;
+      esac
+      shift
+      ;;
+    --analyze-receipt)
+      if [[ "${BILL_MODE}" == "manual" ]]; then
+        reject_input "Cannot combine --analyze-receipt and --manual (mutually exclusive)."
+      fi
+      BILL_MODE="analyze-receipt"
+      if [[ $# -ge 2 && "$2" != -* ]]; then
+        RECEIPT_IMAGE="$2"
+        HAS_RECEIPT_IMAGE=1
+        shift 2
+      else
+        shift
+      fi
+      ;;
+    --analyze-receipt=*)
+      if [[ "${BILL_MODE}" == "manual" ]]; then
+        reject_input "Cannot combine --analyze-receipt and --manual (mutually exclusive)."
+      fi
+      BILL_MODE="analyze-receipt"
+      val="${1#*=}"
+      if [[ -n "${val}" ]]; then
+        RECEIPT_IMAGE="${val}"
+        HAS_RECEIPT_IMAGE=1
+      fi
+      shift
+      ;;
+    --manual)
+      if [[ "${BILL_MODE}" == "analyze-receipt" ]]; then
+        reject_input "Cannot combine --analyze-receipt and --manual (mutually exclusive)."
+      fi
+      BILL_MODE="manual"
+      shift
       ;;
     -g|--guests)
       require_value "$1" "$#"
@@ -255,32 +319,69 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${GUESTS}" ]]; then
-  reject_input "Missing required guest count parameter (-g / --guests <N> or positional <N>)."
-fi
-
-if ! [[ "${GUESTS}" =~ ^[0-9]+$ ]]; then
-  reject_input "Guest count '${GUESTS}' is not a valid positive integer."
-fi
-
-GUESTS_INT=$((10#${GUESTS}))
-
-if [[ "${GUESTS_INT}" -lt 1 ]]; then
-  reject_input "Guest count must be at least 1 (got '${GUESTS}')."
-fi
-
-if [[ "${HEADLESS_GUESTS}" -eq 1 ]]; then
-  if [[ "${GUESTS_INT}" -gt "${MAX_HEADLESS_GUESTS}" ]]; then
-    reject_input "Guest count ${GUESTS_INT} exceeds maximum ${MAX_HEADLESS_GUESTS} allowed with --headless-guests."
+PY_TOPOLOGY_ARGS=()
+if [[ -n "${SCENARIO}" ]]; then
+  if [[ "${SCENARIO}" == "4-visible" ]]; then
+    EXP_GUESTS=3
+    EXP_HEADLESS=0
+    MODE_DESC="scenario 4-visible (1 Organizer + 3 visible guests)"
+  else
+    EXP_GUESTS=9
+    EXP_HEADLESS=1
+    MODE_DESC="scenario 10-headless (1 Organizer visible + 9 headless ATD guests)"
   fi
-  MODE_FLAG="--headless-guests"
-  MODE_DESC="headless guests (Organizer visible + ${GUESTS_INT} headless guest(s))"
+  if [[ -n "${GUESTS}" ]]; then
+    if ! [[ "${GUESTS}" =~ ^[0-9]+$ ]] || [[ "$((10#${GUESTS}))" -ne "${EXP_GUESTS}" ]]; then
+      reject_input "Cannot combine --scenario ${SCENARIO} with --guests '${GUESTS}' (expected ${EXP_GUESTS})."
+    fi
+  fi
+  if [[ -n "${HEADLESS_GUESTS}" && "${HEADLESS_GUESTS}" -ne "${EXP_HEADLESS}" ]]; then
+    reject_input "Cannot combine --scenario ${SCENARIO} with conflicting window flag."
+  fi
+  GUESTS_INT="${EXP_GUESTS}"
+  PY_TOPOLOGY_ARGS+=(--scenario "${SCENARIO}")
 else
-  if [[ "${GUESTS_INT}" -gt "${MAX_VISIBLE_GUESTS}" ]]; then
-    reject_input "Guest count ${GUESTS_INT} exceeds maximum ${MAX_VISIBLE_GUESTS} allowed with --show-all-windows."
+  if [[ -z "${GUESTS}" ]]; then
+    reject_input "Provide either --scenario <4-visible|10-headless> or -g / --guests <N>."
   fi
-  MODE_FLAG="--show-all-windows"
-  MODE_DESC="all windows shown ($((1 + GUESTS_INT)) visible emulator window(s))"
+  if ! [[ "${GUESTS}" =~ ^[0-9]+$ ]]; then
+    reject_input "Guest count '${GUESTS}' is not a valid positive integer."
+  fi
+  GUESTS_INT=$((10#${GUESTS}))
+  if [[ "${GUESTS_INT}" -lt 1 ]]; then
+    reject_input "Guest count must be at least 1 (got '${GUESTS}')."
+  fi
+  EFF_HEADLESS="${HEADLESS_GUESTS:-1}"
+  if [[ "${EFF_HEADLESS}" -eq 1 ]]; then
+    if [[ "${GUESTS_INT}" -gt "${MAX_HEADLESS_GUESTS}" ]]; then
+      reject_input "Guest count ${GUESTS_INT} exceeds maximum ${MAX_HEADLESS_GUESTS} allowed with --headless-guests."
+    fi
+    MODE_FLAG="--headless-guests"
+    MODE_DESC="headless guests (Organizer visible + ${GUESTS_INT} headless guest(s))"
+  else
+    if [[ "${GUESTS_INT}" -gt "${MAX_VISIBLE_GUESTS}" ]]; then
+      reject_input "Guest count ${GUESTS_INT} exceeds maximum ${MAX_VISIBLE_GUESTS} allowed with --show-all-windows."
+    fi
+    MODE_FLAG="--show-all-windows"
+    MODE_DESC="all windows shown ($((1 + GUESTS_INT)) visible emulator window(s))"
+  fi
+  PY_TOPOLOGY_ARGS+=(--guests "${GUESTS_INT}" "${MODE_FLAG}")
+fi
+
+BILL_MODE_EFF="${BILL_MODE:-manual}"
+if [[ "${BILL_MODE_EFF}" == "analyze-receipt" && "${HAS_RECEIPT_IMAGE}" -eq 1 ]]; then
+  RESOLVED_IMG="${RECEIPT_IMAGE}"
+  if [[ "${RESOLVED_IMG}" != /* && ! "${RESOLVED_IMG}" =~ ^[A-Za-z]: ]]; then
+    if [[ -f "$(pwd)/${RESOLVED_IMG}" ]]; then
+      RESOLVED_IMG="$(pwd)/${RESOLVED_IMG}"
+    else
+      RESOLVED_IMG="${REPO_ROOT}/${RESOLVED_IMG}"
+    fi
+  fi
+  if [[ ! -f "${RESOLVED_IMG}" ]]; then
+    reject_input "Receipt image not found: '${RECEIPT_IMAGE}'. Place fixtures under e2e/fixtures/ or omit the path for auto-selection."
+  fi
+  RECEIPT_IMAGE="${RESOLVED_IMG}"
 fi
 
 RESOLVED_APK="${APK_PATH}"
@@ -306,10 +407,20 @@ fi
 
 PY_ARGS=(
   "${REPO_ROOT}/e2e/five_phone_android_e2e.py"
-  --guests "${GUESTS_INT}"
-  "${MODE_FLAG}"
+  "${PY_TOPOLOGY_ARGS[@]}"
   --apk "${RESOLVED_APK}"
 )
+
+if [[ "${BILL_MODE}" == "analyze-receipt" ]]; then
+  if [[ "${HAS_RECEIPT_IMAGE}" -eq 1 ]]; then
+    PY_ARGS+=(--analyze-receipt "${RECEIPT_IMAGE}")
+  else
+    PY_ARGS+=(--analyze-receipt)
+  fi
+elif [[ "${BILL_MODE}" == "manual" ]]; then
+  PY_ARGS+=(--manual)
+fi
+
 if [[ -n "${SEED}" ]]; then
   PY_ARGS+=(--seed "${SEED}")
 fi
@@ -354,7 +465,7 @@ if [[ -n "${GUEST_GPU}" ]]; then
 fi
 
 if [[ "${JSON_MODE}" -eq 0 ]]; then
-  echo "[run_android_e2e] Starting E2E run: 1 Organizer + ${GUESTS_INT} Guest(s) | Mode: ${MODE_DESC}"
+  echo "[run_android_e2e] Starting E2E run: 1 Organizer + ${GUESTS_INT} Guest(s) | ${MODE_DESC} | Bill mode: ${BILL_MODE_EFF}"
   echo "[run_android_e2e] APK: ${RESOLVED_APK}"
 fi
 
