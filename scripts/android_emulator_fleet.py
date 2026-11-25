@@ -153,15 +153,34 @@ def run_cmd(
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
-    proc = subprocess.run(
-        cmd,
-        env=merged_env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            env=merged_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if check:
+            raise
+        raw_out = exc.stdout
+        raw_err = exc.stderr
+        out = (
+            raw_out.decode("utf-8", errors="replace")
+            if isinstance(raw_out, (bytes, bytearray))
+            else (raw_out or "")
+        )
+        err = (
+            raw_err.decode("utf-8", errors="replace")
+            if isinstance(raw_err, (bytes, bytearray))
+            else (raw_err or "")
+        )
+        timeout_note = f"Command timed out after {timeout}s"
+        err = f"{err.rstrip()}\n{timeout_note}".strip() if err else timeout_note
+        return subprocess.CompletedProcess(cmd, returncode=124, stdout=out, stderr=err)
     if check and proc.returncode != 0:
         raise RuntimeError(
             f"Command failed ({proc.returncode}): {' '.join(cmd)}\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}"
@@ -206,40 +225,73 @@ def _sysdir_to_path(sdk: Path, rel: str) -> Path:
     return sdk.joinpath(*parts)
 
 
+class _WindowsMemoryStatusEx(ctypes.Structure):
+    _fields_ = [
+        ("dwLength", ctypes.c_uint32),
+        ("dwMemoryLoad", ctypes.c_uint32),
+        ("ullTotalPhys", ctypes.c_uint64),
+        ("ullAvailPhys", ctypes.c_uint64),
+        ("ullTotalPageFile", ctypes.c_uint64),
+        ("ullAvailPageFile", ctypes.c_uint64),
+        ("ullTotalVirtual", ctypes.c_uint64),
+        ("ullAvailVirtual", ctypes.c_uint64),
+        ("ullAvailExtendedVirtual", ctypes.c_uint64),
+    ]
+
+
+def _query_windows_memory_status() -> Optional[_WindowsMemoryStatusEx]:
+    if os.name != "nt":
+        return None
+    stat = _WindowsMemoryStatusEx()
+    stat.dwLength = ctypes.sizeof(_WindowsMemoryStatusEx)
+    if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+        return stat
+    return None
+
+
+def _read_proc_meminfo_mb() -> Dict[str, int]:
+    meminfo = Path("/proc/meminfo")
+    vals: Dict[str, int] = {}
+    if not meminfo.exists():
+        return vals
+    for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            num = v.strip().split()[0]
+            if num.isdigit():
+                vals[k.strip()] = int(num) // 1024
+    return vals
+
+
 def get_host_memory_mb() -> Tuple[int, int]:
     """Return (total_physical_mb, available_physical_mb) using stdlib only."""
-    if os.name == "nt":
-        class _MEMORYSTATUSEX(ctypes.Structure):
-            _fields_ = [
-                ("dwLength", ctypes.c_uint32),
-                ("dwMemoryLoad", ctypes.c_uint32),
-                ("ullTotalPhys", ctypes.c_uint64),
-                ("ullAvailPhys", ctypes.c_uint64),
-                ("ullTotalPageFile", ctypes.c_uint64),
-                ("ullAvailPageFile", ctypes.c_uint64),
-                ("ullTotalVirtual", ctypes.c_uint64),
-                ("ullAvailVirtual", ctypes.c_uint64),
-                ("ullAvailExtendedVirtual", ctypes.c_uint64),
-            ]
+    stat = _query_windows_memory_status()
+    if stat is not None:
+        return (
+            int(stat.ullTotalPhys // (1024 * 1024)),
+            int(stat.ullAvailPhys // (1024 * 1024)),
+        )
 
-        stat = _MEMORYSTATUSEX()
-        stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-            return (
-                int(stat.ullTotalPhys // (1024 * 1024)),
-                int(stat.ullAvailPhys // (1024 * 1024)),
-            )
-
-    meminfo = Path("/proc/meminfo")
-    if meminfo.exists():
-        vals: Dict[str, int] = {}
-        for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
-            if ":" in line:
-                k, v = line.split(":", 1)
-                num = v.strip().split()[0]
-                if num.isdigit():
-                    vals[k.strip()] = int(num) // 1024
+    vals = _read_proc_meminfo_mb()
+    if vals:
         return vals.get("MemTotal", 0), vals.get("MemAvailable", vals.get("MemFree", 0))
+    return 0, 0
+
+
+def get_host_commit_mb() -> Tuple[int, int]:
+    """Return (total_commit_limit_mb, available_commit_mb) using stdlib only."""
+    stat = _query_windows_memory_status()
+    if stat is not None:
+        return (
+            int(stat.ullTotalPageFile // (1024 * 1024)),
+            int(stat.ullAvailPageFile // (1024 * 1024)),
+        )
+
+    vals = _read_proc_meminfo_mb()
+    if "CommitLimit" in vals:
+        limit_mb = vals["CommitLimit"]
+        committed_mb = vals.get("Committed_AS", 0)
+        return limit_mb, max(0, limit_mb - committed_mb)
     return 0, 0
 
 
@@ -880,13 +932,20 @@ class AndroidEmulatorFleet:
         self._log("host", "preflight_accel", accel_line)
 
         total_ram_mb, free_ram_mb = get_host_memory_mb()
+        total_commit_mb, free_commit_mb = get_host_commit_mb()
         requested_guest_mb = sum(self._slot_ram_mb(s) for s in self.slots)
         estimated_host_mb = requested_guest_mb + 350 * len(self.slots)
+        estimated_commit_mb = sum(
+            self._slot_ram_mb(s) + (680 if (self.headless_guests and s.index > 1) else 1350)
+            for s in self.slots
+        )
         exceeds_free_ram = bool(free_ram_mb > 0 and estimated_host_mb > free_ram_mb)
+        exceeds_free_commit = bool(free_commit_mb > 0 and estimated_commit_mb > free_commit_mb)
 
         ram_summary = (
             f"slots={len(self.slots)} guest_sum={requested_guest_mb}MB "
-            f"est_host={estimated_host_mb}MB free_host={free_ram_mb}MB total_host={total_ram_mb}MB"
+            f"est_host={estimated_host_mb}MB free_host={free_ram_mb}MB total_host={total_ram_mb}MB "
+            f"est_commit={estimated_commit_mb}MB free_commit={free_commit_mb}MB total_commit={total_commit_mb}MB"
         )
         self._log("host", "preflight_ram", ram_summary)
 
@@ -900,6 +959,16 @@ class AndroidEmulatorFleet:
             self._log("host", "preflight_ram_warning", ram_warning)
             print(ram_warning, file=sys.stderr, flush=True)
 
+        commit_warning: Optional[str] = None
+        if exceeds_free_commit:
+            commit_warning = (
+                f"WARNING: Estimated emulator commit ({estimated_commit_mb} MB) exceeds available host "
+                f"virtual commit ({free_commit_mb} MB of {total_commit_mb} MB limit). "
+                f"Close heavy apps, free disk space on C: for pagefile growth, or pass --guest-ram-mb 896."
+            )
+            self._log("host", "preflight_commit_warning", commit_warning)
+            print(commit_warning, file=sys.stderr, flush=True)
+
         self.last_preflight = {
             "accel": accel_line,
             "total_host_ram_mb": total_ram_mb,
@@ -908,6 +977,11 @@ class AndroidEmulatorFleet:
             "estimated_host_ram_mb": estimated_host_mb,
             "exceeds_free_ram": exceeds_free_ram,
             "ram_warning": ram_warning,
+            "total_host_commit_mb": total_commit_mb,
+            "free_host_commit_mb": free_commit_mb,
+            "estimated_host_commit_mb": estimated_commit_mb,
+            "exceeds_free_commit": exceeds_free_commit,
+            "commit_warning": commit_warning,
         }
         return dict(self.last_preflight)
 
@@ -1084,7 +1158,7 @@ class AndroidEmulatorFleet:
         is_headless = bool(self.headless_guests and slot.index > 1)
         gpu_mode = self.guest_gpu_mode if is_headless else "swiftshader_indirect"
         if is_headless:
-            cmd.extend(["-no-window", "-gpu", gpu_mode])
+            cmd.extend(["-no-window", "-gpu", gpu_mode, "-feature", "-Vulkan"])
         else:
             cmd.extend(["-gpu", gpu_mode])
 
@@ -1145,14 +1219,17 @@ class AndroidEmulatorFleet:
 
     def _probe_guest_dns(self, slot: PhoneSlot, probe_host: str = "supabase.co") -> Optional[str]:
         """Probe guest DNS resolution and external routing using a single ICMP packet."""
-        proc = run_cmd(
-            [str(self.adb_exe), "-s", slot.serial, "shell", "ping", "-c", "1", "-W", "1", probe_host],
-            timeout=6,
-            check=False,
-        )
+        try:
+            proc = run_cmd(
+                [str(self.adb_exe), "-s", slot.serial, "shell", "ping", "-c", "1", "-W", "1", probe_host],
+                timeout=8,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return None
         combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
         lower = combined.lower()
-        if "unknown host" in lower or "unreachable" in lower:
+        if "unknown host" in lower or "unreachable" in lower or "timed out" in lower:
             return None
         match = re.search(r"PING\s+\S+\s+\(([^)]+)\)", combined)
         return match.group(1) if match else None
@@ -1161,7 +1238,7 @@ class AndroidEmulatorFleet:
         self,
         slot: PhoneSlot,
         probe_host: str = "supabase.co",
-        timeout_s: float = 15.0,
+        timeout_s: float = 25.0,
     ) -> bool:
         """Refresh guest Wi-Fi (and cellular fallback) when snapshot restore leaves stale DNS/routes."""
         ip = self._probe_guest_dns(slot, probe_host)
@@ -1578,7 +1655,7 @@ class AndroidEmulatorFleet:
             self._configure_app_debug_host(slot)
             self._log(slot.serial, "apk_ready", f"installed + debug_http_host=localhost:{slot.proxy_port}")
 
-        with ThreadPoolExecutor(max_workers=len(self.slots)) as pool:
+        with ThreadPoolExecutor(max_workers=min(4, max(1, len(self.slots)))) as pool:
             futs = [pool.submit(_install_one, slot) for slot in self.slots]
             for fut in as_completed(futs):
                 fut.result()

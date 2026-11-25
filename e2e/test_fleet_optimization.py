@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -27,6 +28,7 @@ from scripts.android_emulator_fleet import (  # noqa: E402
     build_phone_slots,
     chunk_slots,
     ensure_isolated_avds,
+    run_cmd,
     scan_logcat_lines_for_oom,
 )
 
@@ -201,12 +203,16 @@ class FleetOptimizationTests(unittest.TestCase):
             "scripts.android_emulator_fleet.run_cmd"
         ) as m_run, mock.patch(
             "scripts.android_emulator_fleet.get_host_memory_mb", return_value=(16384, 3000)
+        ), mock.patch(
+            "scripts.android_emulator_fleet.get_host_commit_mb", return_value=(34000, 4000)
         ):
             m_run.return_value = mock.Mock(returncode=0, stdout="accel:\n0\nWHPX(10.0) is installed and usable.\n", stderr="")
             fleet = AndroidEmulatorFleet(PROJECT_ROOT, slots=ALL_PHONE_SLOTS[:4], quiet_stdout=True)
             info = fleet.preflight_check()
             self.assertTrue(info["exceeds_free_ram"])
             self.assertIsNotNone(info["ram_warning"])
+            self.assertTrue(info["exceeds_free_commit"])
+            self.assertIsNotNone(info["commit_warning"])
             self.assertEqual(info["requested_guest_ram_mb"], 1536 + 3 * 1024)
 
     def test_launch_single_emulator_passes_lowram_and_clean_snapshot_flags(self) -> None:
@@ -243,6 +249,7 @@ class FleetOptimizationTests(unittest.TestCase):
                 self.assertEqual(org_cmd[org_cmd.index("-gpu") + 1], "swiftshader_indirect")
                 self.assertIn("-dns-server", org_cmd)
                 self.assertEqual(org_cmd[org_cmd.index("-dns-server") + 1], DEFAULT_DNS_SERVERS)
+                self.assertNotIn("-feature", org_cmd)
 
                 fleet._launch_single_emulator(ALL_PHONE_SLOTS[1], snapshot_mode="load")
                 guest_cmd = m_popen.call_args_list[1].args[0]
@@ -252,6 +259,8 @@ class FleetOptimizationTests(unittest.TestCase):
                 self.assertEqual(guest_cmd[guest_cmd.index("-gpu") + 1], "swiftshader_indirect")
                 self.assertIn("-dns-server", guest_cmd)
                 self.assertEqual(guest_cmd[guest_cmd.index("-dns-server") + 1], DEFAULT_DNS_SERVERS)
+                self.assertIn("-feature", guest_cmd)
+                self.assertEqual(guest_cmd[guest_cmd.index("-feature") + 1], "-Vulkan")
 
     def test_visible_guests_use_default_image_and_preserve_headless_snapshots(self) -> None:
         visible_slots = build_phone_slots(3, headless_guests=False)
@@ -367,6 +376,36 @@ class FleetOptimizationTests(unittest.TestCase):
                 cmds = [call.args[0] for call in m_run.call_args_list]
                 self.assertTrue(any(c[-3:] == ["svc", "wifi", "disable"] for c in cmds))
                 self.assertTrue(any(c[-3:] == ["svc", "wifi", "enable"] for c in cmds))
+
+            # Case C: ping blocks & raises TimeoutExpired / returncode=124 after Wi-Fi enable -> retries and succeeds
+            with mock.patch(
+                "scripts.android_emulator_fleet.run_cmd",
+                side_effect=[
+                    mock.Mock(returncode=2, stdout="", stderr="ping: unknown host supabase.co\n"),
+                    mock.Mock(returncode=0, stdout="", stderr=""),
+                    mock.Mock(returncode=0, stdout="", stderr=""),
+                    subprocess.TimeoutExpired(cmd=["adb", "shell", "ping"], timeout=8),
+                    mock.Mock(returncode=124, stdout="", stderr="Command timed out after 8s"),
+                    mock.Mock(
+                        returncode=0,
+                        stdout="PING supabase.co (76.76.21.21) 56(84) bytes of data.\n",
+                        stderr="",
+                    ),
+                ],
+            ) as m_run, mock.patch("scripts.android_emulator_fleet.time.sleep"):
+                self.assertTrue(fleet._ensure_guest_network(slot, timeout_s=25.0))
+                self.assertEqual(m_run.call_count, 6)
+
+    def test_run_cmd_timeout_handling_check_true_vs_false(self) -> None:
+        exc = subprocess.TimeoutExpired(cmd=["adb", "shell", "ping"], timeout=6, output=b"", stderr=b"")
+        with mock.patch("scripts.android_emulator_fleet.subprocess.run", side_effect=exc):
+            res = run_cmd(["adb", "shell", "ping"], timeout=6, check=False)
+            self.assertEqual(res.returncode, 124)
+            self.assertIn("timed out", res.stderr.lower())
+
+        with mock.patch("scripts.android_emulator_fleet.subprocess.run", side_effect=exc):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                run_cmd(["adb", "shell", "ping"], timeout=6, check=True)
 
 
 if __name__ == "__main__":
